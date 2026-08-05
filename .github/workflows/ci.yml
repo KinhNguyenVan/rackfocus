@@ -17,13 +17,23 @@ jobs:
       - run: ruff check services/${{ matrix.svc }}/src
       # - run: pytest services/${{ matrix.svc }}/tests -q
 
-  proto-breaking:
+  proto:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
       - uses: bufbuild/buf-setup-action@v1
-      - run: buf lint
-        working-directory: proto
-      - run: buf breaking --against ".git#branch=main,subdir=proto"
-        working-directory: proto
+
+      # Lint luôn chạy, ở cả push và PR
+      - name: buf lint
+        run: buf lint proto
+
+      # Chỉ so breaking change trên PR — push vào main là so với chính nó
+      - name: Lấy nhánh main về local
+        if: github.event_name == 'pull_request'
+        run: git fetch origin main:main
+
+      - name: buf breaking
+        if: github.event_name == 'pull_request'
+        run: buf breaking proto --against ".git#branch=main,subdir=proto"
