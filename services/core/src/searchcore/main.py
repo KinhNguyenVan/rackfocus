@@ -7,7 +7,7 @@ import grpc
 
 from .config import cfg
 from .pb.searchcore.v1 import search_pb2_grpc as pb_grpc
-from .server import SearchCoreServicer
+from .server import SearchCoreServiceServicer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("searchcore")
@@ -27,7 +27,7 @@ def serve() -> None:
             ("grpc.max_receive_message_length", 32 * 1024 * 1024),
         ],
     )
-    pb_grpc.add_SearchCoreServicer_to_server(SearchCoreServicer(holder), server)
+    pb_grpc.add_SearchCoreServiceServicer_to_server(SearchCoreServiceServicer(holder), server)
 
     os.makedirs(os.path.dirname(cfg.socket_path), exist_ok=True)
     if os.path.exists(cfg.socket_path):
