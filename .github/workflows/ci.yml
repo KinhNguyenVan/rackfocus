@@ -1,0 +1,29 @@
+name: ci
+on:
+  pull_request:
+  push: { branches: [main] }
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        svc: [core, be, ingest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ruff pytest
+      - run: ruff check services/${{ matrix.svc }}/src
+      # - run: pytest services/${{ matrix.svc }}/tests -q
+
+  proto-breaking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: bufbuild/buf-setup-action@v1
+      - run: buf lint
+        working-directory: proto
+      - run: buf breaking --against ".git#branch=main,subdir=proto"
+        working-directory: proto

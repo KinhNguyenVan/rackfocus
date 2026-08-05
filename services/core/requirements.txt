@@ -1,0 +1,7 @@
+faiss-cpu
+numpy
+grpcio
+grpcio-tools
+protobuf
+onnxruntime
+pydantic-settings

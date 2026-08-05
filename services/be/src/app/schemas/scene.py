@@ -1,0 +1,1 @@
+"""Pydantic: SceneDetail, SceneNeighbor, TimelineItem."""

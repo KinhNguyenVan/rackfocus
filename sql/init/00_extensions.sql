@@ -1,0 +1,1 @@
+-- CREATE EXTENSION unaccent, pg_trgm.

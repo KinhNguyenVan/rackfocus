@@ -1,0 +1,1 @@
+"""Settings: DATABASE_URL, REDIS_URL, SEARCHCORE_TARGET, S3/R2 keys, LLM key."""

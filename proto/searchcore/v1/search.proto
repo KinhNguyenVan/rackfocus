@@ -1,0 +1,80 @@
+syntax = "proto3";
+package searchcore.v1;
+
+// Hợp đồng giữa BE Gateway và Search Core.
+// Mọi thay đổi phá vỡ tương thích phải bump sang v2, không sửa tại chỗ.
+service SearchCore {
+  rpc Search         (SearchRequest)   returns (SearchResponse);
+  rpc SearchStream   (SearchRequest)   returns (stream SearchHit);
+  rpc SearchTemporal (TemporalRequest) returns (TemporalResponse);
+  rpc Encode         (EncodeRequest)   returns (VectorReply);
+  rpc LoadSnapshot   (SnapshotRequest) returns (StatusReply);
+  rpc Health         (Empty)           returns (HealthReply);
+}
+
+message Empty {}
+message Vector { repeated float values = 1; }
+message Region { float x = 1; float y = 2; float w = 3; float h = 4; }  // normalized 0..1
+
+message SearchRequest {
+  oneof query {
+    string text   = 1;   // core tự encode -> tiết kiệm 1 round-trip
+    bytes  image  = 2;   // VKIS: query bằng ảnh
+    Vector vector = 3;   // BE đã có sẵn vector (cache hit)
+  }
+  int32 top_k              = 4;   // mặc định 50
+  int32 rerank_candidates  = 5;   // 500-1000 -> số candidate tầng 1
+  int32 ef_search          = 6;   // 32-256, tune runtime
+  repeated uint64 allowlist = 7;  // pre-filter id từ Postgres
+  Region region            = 8;   // sub-region search
+  bool  skip_rerank        = 9;   // bỏ tầng 2 khi cần cực nhanh
+}
+
+message SearchHit {
+  uint64 scene_id     = 1;
+  int64  faiss_row    = 2;
+  float  score_coarse = 3;
+  float  score_exact  = 4;
+  int32  rank         = 5;
+}
+
+message Timings {
+  float encode_ms = 1;
+  float coarse_ms = 2;
+  float rerank_ms = 3;
+  float total_ms  = 4;
+}
+
+message SearchResponse {
+  repeated SearchHit hits = 1;
+  Timings timings         = 2;
+  string  snapshot_ver    = 3;
+}
+
+// TRAKE: chuỗi sự kiện có thứ tự thời gian
+message TemporalRequest {
+  repeated string events    = 1;
+  float  max_gap_sec        = 2;
+  int32  top_k              = 3;
+  bool   require_same_video = 4;
+}
+message TemporalResponse {
+  message Chain {
+    repeated uint64 scene_ids  = 1;
+    repeated double timestamps = 2;
+    float  score               = 3;
+  }
+  repeated Chain chains = 1;
+}
+
+message EncodeRequest { oneof input { string text = 1; bytes image = 2; } }
+message VectorReply   { Vector vector = 1; float encode_ms = 2; }
+
+message SnapshotRequest { string path = 1; bool warmup = 2; }
+message StatusReply     { bool ok = 1; string message = 2; string version = 3; }
+message HealthReply {
+  bool   ready        = 1;
+  string snapshot_ver = 2;
+  int64  vector_count = 3;
+  int32  dim          = 4;
+}

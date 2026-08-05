@@ -1,0 +1,8 @@
+# Chia sở hữu để không giẫm chân nhau. Đổi @tên thành GitHub handle thật.
+/proto/                 @kinh          # hợp đồng — đổi phải có review của cả 2 phía
+/services/core/         @kinh
+/services/be/           @be-owner
+/services/ingest/       @ingest-owner
+/services/fe/           @fe-owner
+/sql/                   @be-owner @ingest-owner
+/docs/decisions/        @kinh

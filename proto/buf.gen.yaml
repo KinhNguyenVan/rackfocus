@@ -1,0 +1,10 @@
+version: v1
+plugins:
+  - plugin: python
+    out: ../services/core/src/searchcore/pb
+  - plugin: grpc_python
+    out: ../services/core/src/searchcore/pb
+  - plugin: python
+    out: ../services/be/src/app/pb
+  - plugin: grpc_python
+    out: ../services/be/src/app/pb

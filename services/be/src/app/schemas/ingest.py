@@ -1,0 +1,1 @@
+"""Pydantic: UploadUrlRequest, IngestStatus."""

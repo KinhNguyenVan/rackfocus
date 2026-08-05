@@ -1,0 +1,29 @@
+# Dùng cùng file chính: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  be:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./services/be/src:/app/src
+    ports: ["8000:8000"]
+
+  searchcore:
+    volumes:
+      - ./services/core/src:/app/src
+      - ./data/snapshots:/data/snapshots:ro
+      - ./data/models:/models:ro
+      - sc_sock:/var/run/searchcore
+    ports: ["50051:50051"]     # mở TCP để debug bằng grpcurl
+
+  fe:
+    build:
+      context: ./services/fe
+      target: build
+    command: npm run dev -- --host 0.0.0.0
+    volumes:
+      - ./services/fe/src:/app/src
+    ports: ["5173:5173"]
+
+  postgres:
+    ports: ["5432:5432"]
+  redis:
+    ports: ["6379:6379"]

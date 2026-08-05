@@ -1,0 +1,1 @@
+-- GIN tsvector cho OCR/ASR, index (video_id, scene_idx), (video_id, start_sec).

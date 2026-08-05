@@ -1,0 +1,1 @@
+-- Batch: WHERE id = ANY($1) ORDER BY array_position($1, id).

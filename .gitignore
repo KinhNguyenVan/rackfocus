@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+node_modules/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# stub sinh từ proto — không commit, chạy `make proto`
+services/core/src/searchcore/pb/*
+services/be/src/app/pb/*
+!**/pb/.gitkeep
+
+# artifact nặng — không bao giờ commit
+*.faiss
+*.f16
+*.npy
+*.parquet
+snapshots/
+models/
+data/

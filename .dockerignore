@@ -1,0 +1,11 @@
+.git
+.venv
+node_modules
+dist
+__pycache__
+*.faiss
+*.f16
+*.npy
+snapshots/
+models/
+data/

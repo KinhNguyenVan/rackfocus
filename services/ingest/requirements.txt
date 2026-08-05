@@ -1,0 +1,13 @@
+numpy
+pandas
+pyarrow
+torch
+transformers
+onnxruntime-gpu
+faiss-cpu
+scenedetect
+faster-whisper
+paddleocr
+ultralytics
+boto3
+psycopg[binary]

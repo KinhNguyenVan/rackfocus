@@ -1,0 +1,1 @@
+-- Lọc theo object/OCR/ASR/thời gian -> danh sách scene_id.

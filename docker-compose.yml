@@ -1,0 +1,102 @@
+name: rackfocus
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [be, fe]
+    logging: *logging
+
+  fe:
+    build: ./services/fe
+    image: ghcr.io/kinhnguyenvan/rackfocus-fe:${TAG:-latest}
+    restart: unless-stopped
+    logging: *logging
+
+  be:
+    build: ./services/be
+    image: ghcr.io/kinhnguyenvan/rackfocus-be:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - sc_sock:/var/run/searchcore
+    depends_on:
+      searchcore: { condition: service_healthy }
+      postgres:   { condition: service_healthy }
+      redis:      { condition: service_started }
+    deploy:
+      resources:
+        limits: { memory: 3G }
+    logging: *logging
+
+  searchcore:
+    build: ./services/core
+    image: ghcr.io/kinhnguyenvan/rackfocus-core:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # NVMe! refine.f16 được mmap từ đây — không dùng HDD hay network storage
+      - ${SNAPSHOT_HOST_DIR:-./data/snapshots}:/data/snapshots:ro
+      - ${MODELS_HOST_DIR:-./data/models}:/models:ro
+      - sc_sock:/var/run/searchcore
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('/var/run/searchcore/sc.sock'); sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s     # load 6.7GB index + warmup, đừng để bị restart vòng lặp
+    deploy:
+      resources:
+        limits: { memory: 12G }
+    logging: *logging
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rackfocus
+      POSTGRES_USER: vs
+      POSTGRES_PASSWORD: ${PG_PASS}
+    command: >
+      postgres
+      -c shared_buffers=2GB
+      -c effective_cache_size=6GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=512MB
+      -c random_page_cost=1.1
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vs -d rackfocus"]
+      interval: 5s
+      retries: 20
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --appendonly no
+    volumes: [redisdata:/data]
+    logging: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  sc_sock:
