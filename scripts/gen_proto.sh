@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sinh stub gRPC cho cả core và be từ proto/.
-# Chạy lại mỗi khi sửa proto/searchcore/v1/search.proto
+# Chạy lại mỗi khi sửa bất kỳ file .proto nào.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,21 +9,23 @@ python3 -c "import grpc_tools" 2>/dev/null || {
   echo "Thiếu grpcio-tools. Chạy: pip install grpcio-tools"; exit 1; }
 
 for OUT in services/core/src/searchcore/pb services/be/src/app/pb; do
-  mkdir -p "$OUT"
+  rm -rf "$OUT"; mkdir -p "$OUT"
+
   python3 -m grpc_tools.protoc \
     -I proto \
     --python_out="$OUT" \
     --grpc_python_out="$OUT" \
     --pyi_out="$OUT" \
-    proto/searchcore/v1/search.proto
+    proto/searchcore/v1/*.proto
 
-  # protoc sinh import tuyệt đối (from searchcore.v1 import ...) -> sửa thành tương đối,
-  # nếu không sẽ ModuleNotFoundError khi import từ package khác.
+  # protoc sinh import tuyệt đối (from searchcore.v1 import ...) -> sửa thành
+  # tương đối, nếu không sẽ ModuleNotFoundError khi import từ package khác.
   find "$OUT" -name '*_pb2*.py' -print0 | while IFS= read -r -d '' f; do
     sed -i.bak -E 's/^from searchcore\.v1 import/from . import/' "$f" && rm -f "$f.bak"
   done
 
-  touch "$OUT/__init__.py" "$OUT/searchcore/__init__.py" "$OUT/searchcore/v1/__init__.py" 2>/dev/null || true
+  # protoc không tạo __init__.py, phải tự thêm để import được
+  find "$OUT" -type d -exec touch {}/__init__.py \;
 done
 
 echo "Đã sinh stub cho core và be."

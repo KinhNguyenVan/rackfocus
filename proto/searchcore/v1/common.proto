@@ -1,0 +1,232 @@
+syntax = "proto3";
+package searchcore.v1;
+
+// ════════════════════════════════════════════════════════════════════
+//  rackfocus — kiểu dùng chung cho mọi service.
+//
+//  QUY TẮC SỬA FILE NÀY
+//  1. Thêm field/message mới -> an toàn.
+//  2. Đổi SỐ field, đổi tên, xoá -> PHÁ TƯƠNG THÍCH. Dùng `reserved`.
+//  3. CI có job `buf breaking` canh gác.
+// ════════════════════════════════════════════════════════════════════
+
+// ── Enum ────────────────────────────────────────────────────────────
+
+enum DistanceMetric {
+  DISTANCE_METRIC_UNSPECIFIED = 0;
+  DISTANCE_METRIC_COSINE      = 1;
+  DISTANCE_METRIC_DOT         = 2;
+  DISTANCE_METRIC_L2          = 3;
+}
+
+// Xem ADR-0004: scene là đơn vị index chính, nhưng giữ thêm keyframe-level
+// cho KIS/QA vì scene embedding (trung bình các frame) làm loãng chi tiết
+// chỉ xuất hiện ở một frame.
+enum IndexTier {
+  INDEX_TIER_UNSPECIFIED = 0;
+  INDEX_TIER_SCENE       = 1;
+  INDEX_TIER_KEYFRAME    = 2;
+  INDEX_TIER_BOTH        = 3;
+}
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_KIS         = 1;
+  TASK_TYPE_AVS         = 2;
+  TASK_TYPE_VKIS        = 3;
+  TASK_TYPE_QA          = 4;
+  TASK_TYPE_TRAKE       = 5;
+}
+
+// Cách hợp nhất điểm khi search nhiều vector name, nhiều tầng,
+// hoặc trộn dense với sparse.
+enum FusionMode {
+  FUSION_MODE_UNSPECIFIED = 0;
+  FUSION_MODE_MAX         = 1;
+  FUSION_MODE_MEAN        = 2;
+  FUSION_MODE_SUM         = 3;
+  FUSION_MODE_RRF         = 4;  // reciprocal rank fusion — an toàn khi thang điểm khác nhau
+  FUSION_MODE_DBSF        = 5;  // distribution-based score fusion
+}
+
+// HNSW + filter chọn lọc cao là bài toán khó: khi hầu hết neighbor bị loại,
+// thuật toán đi trên đồ thị bị lạc, phải duyệt rất xa mới gom đủ top_k
+// -> latency tăng vọt, recall tụt. Nút vặn này để xử lý.
+enum FilterStrategy {
+  FILTER_STRATEGY_UNSPECIFIED  = 0;  // core tự chọn theo cardinality
+  FILTER_STRATEGY_PRE          = 1;
+  FILTER_STRATEGY_POST         = 2;
+  FILTER_STRATEGY_EXACT_SUBSET = 3;  // quét vét cạn tập con — nhanh hơn khi tập nhỏ
+}
+
+// 1.2M ID dạng list = ~10MB mỗi request, ăn hết ngân sách latency.
+enum IdSetEncoding {
+  ID_SET_ENCODING_UNSPECIFIED = 0;
+  ID_SET_ENCODING_LIST        = 1;  // hợp khi < ~50k ID
+  ID_SET_ENCODING_BITSET      = 2;  // 2M bit = 250KB
+  ID_SET_ENCODING_ROARING     = 3;  // nén tốt hơn khi thưa
+}
+
+enum QuantizationKind {
+  QUANTIZATION_KIND_UNSPECIFIED  = 0;
+  QUANTIZATION_KIND_NONE         = 1;  // fp32, chính xác nhất, nặng nhất
+  QUANTIZATION_KIND_FP16         = 2;  // nén 2x, gần như không mất gì
+  QUANTIZATION_KIND_SCALAR_INT8  = 3;  // SQ8, nén 4x — mặc định khuyến nghị
+  QUANTIZATION_KIND_PRODUCT      = 4;  // PQ, nén 10-30x, mất recall
+  QUANTIZATION_KIND_BINARY       = 5;  // nén 32x, BẮT BUỘC kèm rescore
+}
+
+// ── Vector ──────────────────────────────────────────────────────────
+
+message Vector { repeated float values = 1; }
+
+// Sparse vector cho hybrid search: index = term id, value = trọng số BM25.
+// FAISS không xử lý sparse — core phải tự giữ inverted index cho phần này.
+message SparseVector {
+  repeated uint32 indices = 1;
+  repeated float  values  = 2;
+}
+
+// Một scene có nhiều embedding: visual, ocr, asr, motion...
+// Mỗi name là một FAISS index riêng, chung không gian id.
+message NamedVector {
+  string name          = 1;  // "visual" | "ocr" | "asr" | "motion"
+  Vector dense         = 2;
+  SparseVector sparse  = 3;  // chỉ một trong hai được set
+}
+
+// Vùng quan tâm trên khung hình, toạ độ chuẩn hoá 0..1.
+// Sub-region search kiểu PraK: "nhớ mang máng có gì đó ở góc trên trái".
+message Region {
+  float x = 1;
+  float y = 2;
+  float w = 3;
+  float h = 4;
+}
+
+// ── Context ─────────────────────────────────────────────────────────
+
+// Bọc mọi request. Nhét vào sau rất đắt nên đưa vào từ đầu.
+message RequestContext {
+  string request_id  = 1;  // trace xuyên BE -> core
+  string session_id  = 2;
+  uint64 tenant_id   = 3;
+  string user_id     = 4;
+  TaskType task_type = 5;  // chỉ để log/metrics
+  int32  deadline_ms = 6;  // core tự huỷ nếu vượt, tránh treo hot path
+  string collection  = 7;  // rỗng = collection mặc định
+}
+
+message ResponseMeta {
+  string  request_id   = 1;
+  string  snapshot_ver = 2;
+  Timings timings      = 3;
+  repeated string warnings = 4;
+  string  collection   = 5;
+}
+
+message Timings {
+  float encode_ms  = 1;
+  float coarse_ms  = 2;
+  float rerank_ms  = 3;
+  float filter_ms  = 4;
+  float fusion_ms  = 5;
+  float total_ms   = 6;
+  int32 candidates_scanned = 7;
+  int64 filter_matched     = 8;
+  FilterStrategy filter_strategy_used = 9;
+}
+
+message Page {
+  int32  limit  = 1;
+  int32  offset = 2;
+  string cursor = 3;
+}
+
+message DebugOptions {
+  bool explain_scores = 1;
+  bool include_vector = 2;
+  bool bypass_cache   = 3;
+  bool force_exact    = 4;  // bỏ ANN, quét toàn bộ — đối chiếu recall thật
+}
+
+// ── Filter ──────────────────────────────────────────────────────────
+
+message IdSet {
+  IdSetEncoding encoding = 1;
+  repeated uint64 ids    = 2;  // khi LIST
+  bytes  packed          = 3;  // khi BITSET / ROARING
+  uint64 universe_size   = 4;
+  int64  cardinality     = 5;  // để core ước tính độ chọn lọc
+}
+
+message Filter {
+  IdSet allow = 1;
+  IdSet deny  = 2;
+
+  repeated uint64 video_ids         = 3;
+  repeated uint64 exclude_video_ids = 4;
+
+  double min_start_sec    = 5;
+  double max_end_sec      = 6;
+  double min_duration_sec = 7;
+  double max_duration_sec = 8;
+
+  repeated string require_objects = 9;   // AND
+  repeated string any_objects     = 10;  // OR
+  repeated string exclude_objects = 11;
+
+  bool require_ocr    = 12;
+  bool require_speech = 13;
+
+  FilterStrategy strategy = 14;
+  uint64 tenant_id        = 15;  // scope cứng
+}
+
+// Định hình danh sách trả về. Trong thi đấu, 10 frame gần giống hệt nhau
+// từ cùng một shot là lãng phí cả màn hình — nhất là AVS cần độ phủ.
+message Diversity {
+  int32  max_per_video    = 1;
+  int32  max_per_shot     = 2;
+  double min_time_gap_sec = 3;
+  float  dedup_threshold  = 4;  // cosine >= ngưỡng thì coi là trùng
+  float  mmr_lambda       = 5;  // 0 = đa dạng tối đa, 1 = liên quan tối đa
+}
+
+// ── Payload ─────────────────────────────────────────────────────────
+
+// Thuộc tính kèm mỗi point. Field có kiểu rõ ràng cho những gì core
+// cần lọc nhanh; `extra` cho phần còn lại.
+message Payload {
+  uint64 video_id  = 1;
+  uint64 shot_id   = 2;
+  int32  scene_idx = 3;
+  double start_sec = 4;
+  double end_sec   = 5;
+  repeated string objects = 6;
+  bool   has_ocr    = 7;
+  bool   has_speech = 8;
+  string keyframe_key = 9;   // key trên R2
+  string clip_key     = 10;
+  IndexTier tier      = 11;
+  map<string, string> extra = 12;
+}
+
+message Point {
+  uint64 id = 1;
+  repeated NamedVector vectors = 2;
+  Payload payload = 3;
+}
+
+message SearchHit {
+  uint64 id           = 1;   // = scene_id hoặc keyframe_id tuỳ tier
+  int64  index_row    = 2;
+  float  score_coarse = 3;
+  float  score_exact  = 4;
+  float  score_fused  = 5;   // sau khi hợp nhất nhiều vector name
+  int32  rank         = 6;
+  Payload payload     = 7;
+  IndexTier tier      = 8;
+  repeated NamedVector vectors = 9;  // chỉ khi DebugOptions.include_vector
+  map<string, float> score_breakdown = 10;  // chỉ khi explain_scores
+}

@@ -1,0 +1,207 @@
+syntax = "proto3";
+package searchcore.v1;
+
+import "searchcore/v1/common.proto";
+
+// Vận hành. Tách service riêng vì sau này cần auth khác với hot path.
+service AdminService {
+  rpc Health           (HealthRequest)           returns (HealthResponse);
+  rpc Stats            (StatsRequest)            returns (StatsResponse);
+
+  rpc CreateCollection (CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DeleteCollection (DeleteCollectionRequest) returns (DeleteCollectionResponse);
+  rpc ListCollections  (ListCollectionsRequest)  returns (ListCollectionsResponse);
+  rpc GetCollection    (GetCollectionRequest)    returns (GetCollectionResponse);
+  rpc SetAlias         (SetAliasRequest)         returns (SetAliasResponse);
+
+  rpc LoadSnapshot     (LoadSnapshotRequest)     returns (LoadSnapshotResponse);
+  rpc CreateSnapshot   (CreateSnapshotRequest)   returns (CreateSnapshotResponse);
+  rpc ListSnapshots    (ListSnapshotsRequest)    returns (ListSnapshotsResponse);
+
+  rpc Optimize         (OptimizeRequest)         returns (stream OptimizeResponse);
+  rpc Tune             (TuneRequest)             returns (TuneResponse);
+}
+
+// ── Cấu hình index ──────────────────────────────────────────────────
+
+message HnswConfig {
+  int32 m                   = 1;  // số neighbor mỗi node, 32 hợp cho 3072-dim
+  int32 ef_construct        = 2;  // 200 là điểm cân bằng
+  int32 full_scan_threshold = 3;  // dưới ngưỡng này thì quét vét cạn, bỏ đồ thị
+}
+
+message QuantizationConfig {
+  QuantizationKind kind = 1;
+  int32 pq_subvectors   = 2;  // chỉ với PRODUCT
+  int32 pq_bits         = 3;
+  bool  always_ram      = 4;  // false = mmap từ NVMe
+  float rescore_oversampling = 5;  // lấy dư bao nhiêu lần trước khi rescore
+}
+
+message VectorConfig {
+  string name           = 1;  // "visual" | "ocr" | "asr"
+  int32  dim            = 2;
+  DistanceMetric metric = 3;
+  HnswConfig hnsw       = 4;
+  QuantizationConfig quantization = 5;
+  bool   on_disk        = 6;  // mmap thay vì giữ trong RAM
+  QuantizationConfig refine = 7;  // tầng 2: fp16 mmap cho exact rerank
+}
+
+message SparseVectorConfig {
+  string name       = 1;
+  bool   on_disk    = 2;
+  int32  vocab_size = 3;
+}
+
+message CollectionConfig {
+  string name = 1;
+  repeated VectorConfig vectors = 2;
+  repeated SparseVectorConfig sparse_vectors = 3;
+  repeated string payload_indexed_fields = 4;  // field nào cần index để lọc nhanh
+  int32  shard_count = 5;   // để dành, hiện luôn = 1
+  bool   read_only   = 6;
+}
+
+message CollectionInfo {
+  CollectionConfig config = 1;
+  int64  point_count      = 2;
+  int64  tombstone_count  = 3;
+  int64  index_bytes      = 4;
+  string snapshot_ver     = 5;
+  bool   ready            = 6;
+  repeated string aliases = 7;
+}
+
+// ── Collection ──────────────────────────────────────────────────────
+
+message CreateCollectionRequest {
+  RequestContext ctx = 1;
+  CollectionConfig config = 2;
+}
+message CreateCollectionResponse { bool ok = 1; string message = 2; }
+
+message DeleteCollectionRequest {
+  RequestContext ctx = 1;
+  string name = 2;
+}
+message DeleteCollectionResponse { bool ok = 1; string message = 2; }
+
+message ListCollectionsRequest { RequestContext ctx = 1; }
+message ListCollectionsResponse { repeated CollectionInfo collections = 1; }
+
+message GetCollectionRequest {
+  RequestContext ctx = 1;
+  string name = 2;
+}
+message GetCollectionResponse { CollectionInfo collection = 1; }
+
+// Đổi alias để chuyển traffic sang collection mới mà không downtime.
+message SetAliasRequest {
+  RequestContext ctx = 1;
+  string alias           = 2;
+  string collection_name = 3;
+}
+message SetAliasResponse { bool ok = 1; string message = 2; }
+
+// ── Snapshot ────────────────────────────────────────────────────────
+
+message LoadSnapshotRequest {
+  RequestContext ctx = 1;
+  string path           = 2;
+  bool   warmup         = 3;
+  int32  warmup_queries = 4;  // mặc định 50; bỏ qua thì query đầu chậm 10-50x
+  bool   keep_previous  = 5;  // giữ bản cũ trong RAM để rollback nhanh
+  string collection     = 6;
+}
+
+message LoadSnapshotResponse {
+  bool   ok        = 1;
+  string message   = 2;
+  string version   = 3;
+  int64  load_ms   = 4;
+  int64  warmup_ms = 5;
+}
+
+message CreateSnapshotRequest {
+  RequestContext ctx = 1;
+  string collection  = 2;
+  string output_path = 3;
+}
+message CreateSnapshotResponse {
+  bool   ok      = 1;
+  string path    = 2;
+  string version = 3;
+  int64  bytes   = 4;
+}
+
+message SnapshotInfo {
+  string version      = 1;
+  string collection   = 2;
+  int64  point_count  = 3;
+  string encoder_name = 4;
+  string built_at     = 5;
+  int64  size_bytes   = 6;
+  bool   is_active    = 7;
+}
+
+message ListSnapshotsRequest { RequestContext ctx = 1; }
+message ListSnapshotsResponse { repeated SnapshotInfo snapshots = 1; }
+
+// ── Bảo trì ─────────────────────────────────────────────────────────
+
+// Rebuild index để nén bỏ tombstone. Chạy lâu -> stream tiến độ về.
+message OptimizeRequest {
+  RequestContext ctx = 1;
+  string collection    = 2;
+  bool   rebuild_graph = 3;  // dựng lại HNSW từ đầu
+  bool   compact       = 4;  // chỉ nén tombstone
+}
+
+message OptimizeResponse {
+  float  progress = 1;  // 0..1
+  string stage    = 2;
+  bool   done     = 3;
+  string message  = 4;
+}
+
+message TuneRequest {
+  RequestContext ctx = 1;
+  int32 default_ef_search         = 2;
+  int32 default_rerank_candidates = 3;
+  int32 omp_threads               = 4;
+  string collection               = 5;
+}
+message TuneResponse { bool ok = 1; string message = 2; }
+
+// ── Sức khoẻ ────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool   ready        = 1;
+  string snapshot_ver = 2;
+  int64  point_count  = 3;
+  string encoder_name = 4;
+  bool   stub_mode    = 5;  // đang trả kết quả giả
+  repeated string collections = 6;
+  repeated IndexTier loaded_tiers = 7;
+}
+
+message StatsRequest {
+  RequestContext ctx = 1;
+  bool reset = 2;
+}
+
+message StatsResponse {
+  int64 queries_total  = 1;
+  float latency_p50_ms = 2;
+  float latency_p95_ms = 3;
+  float latency_p99_ms = 4;
+  int64 rss_bytes      = 5;
+  int64 index_bytes    = 6;
+  float cache_hit_rate = 7;
+  int64 uptime_sec     = 8;
+  map<string, int64> queries_by_task = 9;
+  map<string, int64> points_by_collection = 10;
+}

@@ -1,0 +1,103 @@
+syntax = "proto3";
+package searchcore.v1;
+
+import "searchcore/v1/common.proto";
+
+// CRUD trên point. Không nằm trong hot path — dùng khi ingest video mới
+// hoặc khi cần đọc/kiểm tra dữ liệu.
+//
+// RÀNG BUỘC FAISS QUAN TRỌNG:
+// IndexHNSW KHÔNG hỗ trợ remove_ids. Xoá phải làm bằng tombstone
+// (đánh dấu đã xoá, lọc lúc search), rồi Optimize() để rebuild và nén.
+// Đừng thiết kế luồng nghiệp vụ giả định xoá là tức thời và miễn phí.
+service PointService {
+  rpc UpsertPoints (stream UpsertPointsRequest) returns (UpsertPointsResponse);
+  rpc DeletePoints (DeletePointsRequest)        returns (DeletePointsResponse);
+  rpc GetPoints    (GetPointsRequest)           returns (GetPointsResponse);
+  rpc ScrollPoints (ScrollPointsRequest)        returns (ScrollPointsResponse);
+  rpc CountPoints  (CountPointsRequest)         returns (CountPointsResponse);
+  rpc SetPayload   (SetPayloadRequest)          returns (SetPayloadResponse);
+}
+
+message UpsertPointsRequest {
+  RequestContext ctx = 1;
+  repeated Point points = 2;
+  bool wait = 3;  // chờ index xong mới trả về; false = ghi vào buffer rồi trả ngay
+}
+
+message UpsertPointsResponse {
+  int64 upserted_count = 1;
+  int64 total_count    = 2;
+  ResponseMeta meta    = 3;
+}
+
+message DeletePointsRequest {
+  RequestContext ctx = 1;
+  oneof selector {
+    IdSet  ids    = 2;
+    Filter filter = 3;  // xoá theo điều kiện, ví dụ toàn bộ scene của một video
+  }
+  bool wait = 4;
+}
+
+message DeletePointsResponse {
+  int64 deleted_count   = 1;
+  int64 tombstone_count = 2;  // số điểm đã đánh dấu nhưng chưa nén khỏi index
+  ResponseMeta meta     = 3;
+}
+
+message GetPointsRequest {
+  RequestContext ctx = 1;
+  repeated uint64 ids = 2;
+  bool with_payload = 3;
+  bool with_vectors = 4;
+  repeated string vector_names = 5;  // rỗng = tất cả
+}
+
+message GetPointsResponse {
+  repeated Point points = 1;
+  ResponseMeta meta = 2;
+}
+
+// Duyệt tuần tự toàn bộ collection. Dùng để export, kiểm tra, migrate.
+message ScrollPointsRequest {
+  RequestContext ctx = 1;
+  Filter filter      = 2;
+  int32  limit       = 3;
+  string cursor      = 4;  // rỗng = từ đầu
+  bool with_payload  = 5;
+  bool with_vectors  = 6;
+}
+
+message ScrollPointsResponse {
+  repeated Point points = 1;
+  string next_cursor    = 2;  // rỗng = hết
+  ResponseMeta meta     = 3;
+}
+
+message CountPointsRequest {
+  RequestContext ctx = 1;
+  Filter filter      = 2;
+  bool   exact       = 3;  // false = ước lượng nhanh
+}
+
+message CountPointsResponse {
+  int64 count = 1;
+  ResponseMeta meta = 2;
+}
+
+// Sửa payload không đụng vector — rẻ hơn upsert nhiều.
+message SetPayloadRequest {
+  RequestContext ctx = 1;
+  oneof selector {
+    IdSet  ids    = 2;
+    Filter filter = 3;
+  }
+  Payload payload = 4;
+  bool    merge   = 5;  // true = trộn với payload cũ, false = ghi đè
+}
+
+message SetPayloadResponse {
+  int64 updated_count = 1;
+  ResponseMeta meta   = 2;
+}

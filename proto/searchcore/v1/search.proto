@@ -1,98 +1,203 @@
 syntax = "proto3";
 package searchcore.v1;
 
-// Hợp đồng giữa BE Gateway và Search Core.
-// Mọi thay đổi phá vỡ tương thích phải bump sang v2, không sửa tại chỗ.
+import "searchcore/v1/common.proto";
+
+// Truy vấn — hot path. Ngân sách 100-200ms cho toàn bộ RPC này.
 service SearchCoreService {
   rpc Search         (SearchRequest)         returns (SearchResponse);
   rpc SearchStream   (SearchStreamRequest)   returns (stream SearchStreamResponse);
+  rpc SearchBatch    (SearchBatchRequest)    returns (SearchBatchResponse);
   rpc SearchTemporal (SearchTemporalRequest) returns (SearchTemporalResponse);
+  rpc SearchSimilar  (SearchSimilarRequest)  returns (SearchSimilarResponse);
+  rpc SearchGrouped  (SearchGroupedRequest)  returns (SearchGroupedResponse);
   rpc Encode         (EncodeRequest)         returns (EncodeResponse);
-  rpc LoadSnapshot   (LoadSnapshotRequest)   returns (LoadSnapshotResponse);
-  rpc Health         (HealthRequest)         returns (HealthResponse);
+  rpc EncodeBatch    (EncodeBatchRequest)    returns (EncodeBatchResponse);
 }
 
-// ── Kiểu dùng chung ────────────────────────────────────────────────
-message Vector { repeated float values = 1; }
-message Region { float x = 1; float y = 2; float w = 3; float h = 4; }  // normalized 0..1
-
-message SearchHit {
-  uint64 scene_id     = 1;
-  int64  faiss_row    = 2;
-  float  score_coarse = 3;
-  float  score_exact  = 4;
-  int32  rank         = 5;
-}
-
-message Timings {
-  float encode_ms = 1;
-  float coarse_ms = 2;
-  float rerank_ms = 3;
-  float total_ms  = 4;
-}
-
-// ── Search (unary) ─────────────────────────────────────────────────
-message SearchRequest {
-  oneof query {
-    string text   = 1;   // core tự encode -> tiết kiệm 1 round-trip
-    bytes  image  = 2;   // VKIS: query bằng ảnh
-    Vector vector = 3;   // BE đã có sẵn vector (cache hit)
+// ── Truy vấn đa phương thức ─────────────────────────────────────────
+// Trộn nhiều nguồn trong một lần search, mỗi nguồn một trọng số.
+// Ví dụ: text "cầu thủ ăn mừng" (0.7) + ảnh mẫu (0.3).
+message QueryPart {
+  oneof source {
+    string       text   = 1;   // core tự encode
+    bytes        image  = 2;
+    Vector       vector = 3;   // BE đã encode sẵn (cache hit)
+    uint64       point_id = 4; // more-like-this
+    SparseVector sparse = 5;   // hybrid: BM25 trên OCR/ASR
   }
-  int32 top_k               = 4;   // mặc định 50
-  int32 rerank_candidates   = 5;   // 500-1000 -> số candidate tầng 1
-  int32 ef_search           = 6;   // 32-256, tune runtime
-  repeated uint64 allowlist = 7;   // pre-filter id từ Postgres
-  Region region             = 8;   // sub-region search
-  bool  skip_rerank         = 9;   // bỏ tầng 2 khi cần cực nhanh
+  float  weight      = 6;      // mặc định 1.0
+  Region region      = 7;      // chỉ áp cho phần ảnh
+  string vector_name = 8;      // nhắm vào named vector nào; rỗng = "visual"
+}
+
+// Rocchio-style relevance feedback: kéo query về phía cái đúng, đẩy xa cái sai.
+// Exquisitor thắng VBS phần lớn nhờ cơ chế này.
+message Feedback {
+  repeated uint64 positive_ids = 1;
+  repeated uint64 negative_ids = 2;
+  float positive_weight = 3;
+  float negative_weight = 4;
+}
+
+// Tham số ANN, lộ ra để tune runtime không cần restart core.
+message SearchParams {
+  int32 ef_search         = 1;  // 32-256
+  int32 rerank_candidates = 2;  // 500-1000
+  bool  skip_rerank       = 3;
+  float min_score         = 4;
+  IndexTier tier          = 5;
+  FusionMode fusion       = 6;
+  float rescore_oversampling = 7;  // với quantization mạnh, lấy dư rồi rescore
+  int32 rrf_k                = 8;  // hằng số RRF, mặc định 60
+  map<string, float> vector_weights = 9;  // trọng số theo vector name
+}
+
+message SearchRequest {
+  RequestContext ctx       = 1;
+  repeated QueryPart query = 2;
+  int32  top_k             = 3;
+  Filter filter            = 4;
+  SearchParams params      = 5;
+  Feedback feedback        = 6;
+  Page page                = 7;
+  DebugOptions debug       = 8;
+  Diversity diversity      = 9;
+  bool with_payload        = 10;
 }
 
 message SearchResponse {
   repeated SearchHit hits = 1;
-  Timings timings         = 2;
-  string  snapshot_ver    = 3;
+  ResponseMeta meta       = 2;
+  int32 total_estimated   = 3;
 }
 
-// ── Search (streaming) ─────────────────────────────────────────────
+// ── Streaming: đẩy kết quả thô ra UI ngay, rerank gửi sau ───────────
 message SearchStreamRequest {
   SearchRequest request  = 1;
-  bool emit_coarse_first = 2;  // đẩy kết quả thô ra UI ngay, rerank gửi sau
+  bool emit_coarse_first = 2;
 }
 
 message SearchStreamResponse {
-  SearchHit hit      = 1;
-  bool      is_final = 2;      // true ở message cuối, kèm timings
-  Timings   timings  = 3;
+  SearchHit hit       = 1;
+  bool      is_coarse = 2;  // sẽ có bản rerank gửi sau
+  bool      is_final  = 3;
+  ResponseMeta meta   = 4;
+}
+
+// ── Batch: nhiều query một lần gọi ─────────────────────────────────
+message SearchBatchRequest {
+  RequestContext ctx = 1;
+  repeated SearchRequest requests = 2;
+}
+
+message SearchBatchResponse {
+  repeated SearchResponse responses = 1;
+  ResponseMeta meta = 2;
 }
 
 // ── TRAKE: chuỗi sự kiện có thứ tự thời gian ───────────────────────
+message TemporalEvent {
+  repeated QueryPart query = 1;
+  float min_gap_sec = 2;
+  float max_gap_sec = 3;
+  bool  optional    = 4;
+}
+
 message SearchTemporalRequest {
-  repeated string events    = 1;
-  float  max_gap_sec        = 2;
+  RequestContext ctx = 1;
+  repeated TemporalEvent events = 2;
   int32  top_k              = 3;
   bool   require_same_video = 4;
+  bool   allow_reorder      = 5;
+  Filter filter             = 6;
+  SearchParams params       = 7;
+  DebugOptions debug        = 8;
+  bool   with_payload       = 9;
+}
+
+message TemporalChain {
+  repeated SearchHit hits = 1;  // theo đúng thứ tự sự kiện
+  float  score    = 2;
+  uint64 video_id = 3;
+  double span_sec = 4;
+  repeated int32 missing_event_indices = 5;
 }
 
 message SearchTemporalResponse {
-  message Chain {
-    repeated uint64 scene_ids  = 1;
-    repeated double timestamps = 2;
-    float  score               = 3;
-  }
-  repeated Chain chains = 1;
+  repeated TemporalChain chains = 1;
+  ResponseMeta meta = 2;
 }
 
-// ── Encode ─────────────────────────────────────────────────────────
-message EncodeRequest  { oneof input { string text = 1; bytes image = 2; } }
-message EncodeResponse { Vector vector = 1; float encode_ms = 2; }
+// ── More-like-this: VKIS ────────────────────────────────────────────
+message SearchSimilarRequest {
+  RequestContext ctx = 1;
+  oneof anchor {
+    uint64 point_id = 2;
+    bytes  image    = 3;
+    bytes  clip     = 4;
+    Vector vector   = 5;
+  }
+  int32  top_k              = 6;
+  bool   exclude_same_video = 7;
+  Filter filter             = 8;
+  SearchParams params       = 9;
+  DebugOptions debug        = 10;
+  Diversity diversity       = 11;
+  string vector_name        = 12;
+  bool   with_payload       = 13;
+}
 
-// ── Vận hành ───────────────────────────────────────────────────────
-message LoadSnapshotRequest  { string path = 1; bool warmup = 2; }
-message LoadSnapshotResponse { bool ok = 1; string message = 2; string version = 3; }
+message SearchSimilarResponse {
+  repeated SearchHit hits = 1;
+  ResponseMeta meta = 2;
+}
 
-message HealthRequest {}
-message HealthResponse {
-  bool   ready        = 1;
-  string snapshot_ver = 2;
-  int64  vector_count = 3;
-  int32  dim          = 4;
+// ── Grouped: gom kết quả theo video, mỗi video lấy N hit tốt nhất ───
+// Khác Diversity ở chỗ trả về cấu trúc nhóm, không phải danh sách phẳng.
+message SearchGroupedRequest {
+  SearchRequest request = 1;
+  string group_by       = 2;  // "video_id" | "shot_id"
+  int32  groups_limit   = 3;
+  int32  group_size     = 4;
+}
+
+message SearchGroup {
+  string group_key = 1;
+  repeated SearchHit hits = 2;
+  float  best_score = 3;
+}
+
+message SearchGroupedResponse {
+  repeated SearchGroup groups = 1;
+  ResponseMeta meta = 2;
+}
+
+// ── Encode: lộ ra để BE cache embedding, ingest dùng lại ────────────
+message EncodeRequest {
+  RequestContext ctx = 1;
+  oneof input {
+    string text  = 2;
+    bytes  image = 3;
+  }
+  bool   normalize   = 4;
+  string vector_name = 5;
+}
+
+message EncodeResponse {
+  Vector vector = 1;
+  ResponseMeta meta = 2;
+}
+
+message EncodeBatchRequest {
+  RequestContext ctx = 1;
+  repeated string texts  = 2;
+  repeated bytes  images = 3;
+  bool   normalize   = 4;
+  string vector_name = 5;
+}
+
+message EncodeBatchResponse {
+  repeated Vector vectors = 1;
+  ResponseMeta meta = 2;
 }
