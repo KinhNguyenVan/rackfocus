@@ -1,16 +1,16 @@
 """R2/S3: presigned PUT cho upload, presigned GET cho keyframe/clip."""
 import os
 import re
-import sys
 import threading
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dotenv import load_dotenv
-from tqdm import tqdm
+
 import boto3
+import requests
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, NoCredentialsError
+from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter, Retry
+from tqdm import tqdm
 
 # Load môi trường từ .env nếu có
 load_dotenv()
@@ -37,11 +37,11 @@ class AWSStorageHelper:
 
     def __init__(
         self,
-        bucket_name: str = None,
-        cloudfront_domain: str = None,
-        region: str = None,
-        aws_access_key: str = None,
-        aws_secret_key: str = None,
+        bucket_name: str | None = None,
+        cloudfront_domain: str | None = None,
+        region: str | None = None,
+        aws_access_key: str | None = None,
+        aws_secret_key: str | None = None,
         max_workers: int = 10,
     ):
         # 1. Khởi tạo cấu hình S3
@@ -93,7 +93,9 @@ class AWSStorageHelper:
     # 📤 UPLOAD FUNCTIONS (Direct to S3)
     # ==========================================
 
-    def upload_file(self, file_path: str, object_name: str = None, storage_class: str = "STANDARD") -> str:
+    def upload_file(
+        self, file_path: str, object_name: str | None = None, storage_class: str = "STANDARD"
+    ) -> str | None:
         """Upload 1 file đơn lẻ lên S3 kèm thanh tiến trình."""
         try:
             if object_name is None:
@@ -116,10 +118,12 @@ class AWSStorageHelper:
             print("❌ Không tìm thấy file cục bộ.")
         except NoCredentialsError:
             print("❌ Không tìm thấy AWS credentials.")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"❌ Lỗi Upload: {e}")
 
-    def upload_large_file(self, file_path: str, object_name: str = None, part_size: int = 50 * 1024 * 1024) -> str:
+    def upload_large_file(
+        self, file_path: str, object_name: str | None = None, part_size: int = 50 * 1024 * 1024
+    ) -> str | None:
         """Multipart upload cho file dung lượng lớn."""
         try:
             if object_name is None:
@@ -145,10 +149,12 @@ class AWSStorageHelper:
             url = self.get_s3_public_url(object_name)
             print(f"\n🚀 File lớn đã upload thành công: {file_path} → {url}")
             return url
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"❌ Lỗi Upload file lớn: {e}")
 
-    def upload_many(self, file_mappings: list, storage_class: str = "STANDARD", max_workers: int = None) -> list:
+    def upload_many(
+        self, file_mappings: list, storage_class: str = "STANDARD", max_workers: int | None = None
+    ) -> list:
         """
         Upload danh sách nhiều file song song.
         file_mappings: danh sách các tuple [(local_path, s3_object_name), ...]
@@ -157,34 +163,41 @@ class AWSStorageHelper:
         results = []
         total_size = sum(os.path.getsize(fp) for fp, _ in file_mappings)
 
-        with tqdm(total=total_size, unit="B", unit_scale=True, desc="Total Progress") as global_pbar:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                future_to_file = {}
-                for file_path, object_name in file_mappings:
-                    filesize = os.path.getsize(file_path)
-                    s3_key = object_name or os.path.basename(file_path)
-                    future = executor.submit(
-                        self.s3_client.upload_file,
-                        file_path,
-                        self.bucket,
-                        s3_key,
-                        ExtraArgs={"StorageClass": storage_class},
-                        Callback=ProgressPercentage(file_path, filesize, global_pbar),
-                    )
-                    future_to_file[future] = (file_path, s3_key)
+        with tqdm(total=total_size, unit="B", unit_scale=True, desc="Total Progress") as global_pbar, ThreadPoolExecutor(
+            max_workers=workers
+        ) as executor:
+            future_to_file = {}
+            for file_path, object_name in file_mappings:
+                filesize = os.path.getsize(file_path)
+                s3_key = object_name or os.path.basename(file_path)
+                future = executor.submit(
+                    self.s3_client.upload_file,
+                    file_path,
+                    self.bucket,
+                    s3_key,
+                    ExtraArgs={"StorageClass": storage_class},
+                    Callback=ProgressPercentage(file_path, filesize, global_pbar),
+                )
+                future_to_file[future] = (file_path, s3_key)
 
-                for future in as_completed(future_to_file):
-                    file_path, s3_key = future_to_file[future]
-                    try:
-                        future.result()
-                        results.append(self.get_s3_public_url(s3_key))
-                    except Exception as e:
-                        print(f"❌ Upload thất bại {file_path}: {e}")
-                        results.append(None)
+            for future in as_completed(future_to_file):
+                file_path, s3_key = future_to_file[future]
+                try:
+                    future.result()
+                    results.append(self.get_s3_public_url(s3_key))
+                except Exception as e:  # noqa: BLE001
+                    print(f"❌ Upload thất bại {file_path}: {e}")
+                    results.append(None)
 
         return results
 
-    def upload_folder(self, local_folder: str, s3_prefix: str = "", storage_class: str = "STANDARD", max_workers: int = None) -> list:
+    def upload_folder(
+        self,
+        local_folder: str,
+        s3_prefix: str = "",
+        storage_class: str = "STANDARD",
+        max_workers: int | None = None,
+    ) -> list:
         """Upload toàn bộ thư mục hoặc một file cục bộ lên S3."""
         file_mappings = []
 
@@ -241,7 +254,7 @@ class AWSStorageHelper:
         except requests.exceptions.RequestException as e:
             return False, f"❌ Lỗi tải {url}: {e}"
 
-    def download_folder_cloudfront(self, prefix: str, dest_folder: str, max_workers: int = None):
+    def download_folder_cloudfront(self, prefix: str, dest_folder: str, max_workers: int | None = None):
         """Download toàn bộ folder qua CloudFront bằng luồng song song (Lấy metadata từ S3)."""
         workers = max_workers or self.max_workers
         files = self.list_files(prefix)
@@ -252,19 +265,20 @@ class AWSStorageHelper:
 
         total_size = sum(f["Size"] for f in files)
 
-        with tqdm(total=total_size, unit="B", unit_scale=True, desc="Downloading via CloudFront") as pbar:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = []
-                for f in files:
-                    key = f["Key"]
-                    relative_path = key[len(prefix):] if prefix and key.startswith(prefix) else key
-                    local_path = os.path.join(dest_folder, relative_path)
-                    futures.append(executor.submit(self.download_file_cloudfront, key, local_path, pbar))
+        with tqdm(total=total_size, unit="B", unit_scale=True, desc="Downloading via CloudFront") as pbar, ThreadPoolExecutor(
+            max_workers=workers
+        ) as executor:
+            futures = []
+            for f in files:
+                key = f["Key"]
+                relative_path = key[len(prefix):] if prefix and key.startswith(prefix) else key
+                local_path = os.path.join(dest_folder, relative_path)
+                futures.append(executor.submit(self.download_file_cloudfront, key, local_path, pbar))
 
-                for future in as_completed(futures):
-                    success, message = future.result()
-                    if not success:
-                        print(message)
+            for future in as_completed(futures):
+                success, message = future.result()
+                if not success:
+                    print(message)
 
         print("✅ Hoàn tất tải toàn bộ folder qua CloudFront!")
 
@@ -297,7 +311,7 @@ class AWSStorageHelper:
         except ClientError as e:
             print(f"❌ Lỗi Xóa File: {e}")
 
-    def generate_presigned_url(self, object_name: str, expiry: int = 3600) -> str:
+    def generate_presigned_url(self, object_name: str, expiry: int = 3600) -> str | None:
         """Tạo đường dẫn xem tạm thời (dùng nếu Bucket đặt Private)."""
         try:
             url = self.s3_client.generate_presigned_url(
@@ -315,7 +329,7 @@ class AWSStorageHelper:
         if not match:
             raise ValueError(f"Định dạng key không hợp lệ: {current_key}")
 
-        prefix, current_frame_str, ext = match.groups()
+        prefix, current_frame_str, _ext = match.groups()
         current_frame_num = int(current_frame_str)
 
         paginator = self.s3_client.get_paginator("list_objects_v2")
