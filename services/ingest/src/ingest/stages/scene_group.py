@@ -59,7 +59,7 @@ def boundaries_to_scenes(
 # 2. MÔ HÌNH (chỉ import torch khi thực sự chạy)
 # =====================================================================
 def _build_crn():
-    import torch.nn as nn
+    from torch import nn
 
     class BaSSL_CRN(nn.Module):
         """ResNet50 feature (2048) -> projection 512 -> Transformer -> boundary prob."""

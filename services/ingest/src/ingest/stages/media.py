@@ -39,7 +39,7 @@ def extract_keyframes(
     kf_dir = os.path.join(out_dir, KEYFRAMES_DIR)
     os.makedirs(kf_dir, exist_ok=True)
 
-    out_w = int(round(width * out_h / height / 2)) * 2   # giữ aspect ratio, chẵn
+    out_w = round(width * out_h / height / 2) * 2   # giữ aspect ratio, chẵn
 
     # need: frame_idx -> True (ghi 1 lần dù nhiều shot dùng chung).
     # rows: một dòng/shot cho shots.csv, kèm 3 frame index kf0/kf1/kf2.

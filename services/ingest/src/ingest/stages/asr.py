@@ -42,13 +42,13 @@ def transcribe(video_path: str, model, **decode_kwargs) -> list[dict]:
 
     decode_kwargs override tham số endless_decode nếu cần (chunk_size, context...).
     """
-    params = dict(
-        chunk_size=64,
-        left_context_size=128,
-        right_context_size=128,
-        total_batch_duration=14400,  # giây; đủ cho video dài
-        return_timestamps=True,
-    )
+    params = {
+        "chunk_size": 64,
+        "left_context_size": 128,
+        "right_context_size": 128,
+        "total_batch_duration": 14400,  # giây; đủ cho video dài
+        "return_timestamps": True,
+    }
     params.update(decode_kwargs)
 
     result = model.endless_decode(audio_path=video_path, **params)
