@@ -2,6 +2,7 @@ numpy
 pandas
 pyarrow
 torch
+torchvision
 transformers
 onnxruntime-gpu
 faiss-cpu
@@ -11,3 +12,11 @@ paddleocr
 ultralytics
 boto3
 psycopg[binary]
+# Stage shot->scene / keyframe
+opencv-python-headless
+pillow
+ffmpeg-python
+# ASR tiếng Việt: cài từ git (không có trên PyPI):
+#   pip install git+https://github.com/khanld/chunkformer.git
+# Shot detect: thêm thư mục inference/ của TransNetV2-master vào PYTHONPATH
+#   (repo: https://github.com/soCzech/TransNetV2)
