@@ -135,10 +135,11 @@ def main() -> None:
     ap.add_argument("--out-root", default="./out", help="Thư mục output gốc")
     ap.add_argument("--bassl-ckpt", required=True, help="Đường dẫn checkpoint .ckpt của BaSSL")
     ap.add_argument("--asr-model", default=None, help="Tên/đường dẫn model chunkformer")
-    ap.add_argument("--siglip-model", default=None,
+    ap.add_argument("--siglip-model", default=os.environ.get("SIGLIP_MODEL_PATH"),
                      help="Thư mục (cục bộ hoặc s3://bucket/prefix) chứa bundle ONNX "
                           "(model.onnx + preprocessor_config.json, xem export_siglip_onnx.py) "
-                          "để embed keyframe (bỏ trống = không embed)")
+                          "để embed keyframe (bỏ trống = không embed; mặc định lấy từ "
+                          "env SIGLIP_MODEL_PATH)")
     ap.add_argument("--upload", action="store_true",
                      help="Đẩy keyframes/scenes/embed_*.parquet lên S3 sau mỗi video")
     ap.add_argument("--shot-threshold", type=float, default=0.5)
