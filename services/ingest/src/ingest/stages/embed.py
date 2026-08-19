@@ -11,6 +11,11 @@ Không ép cứng số chiều vector: SigLIP (khác CLIP) không có projection
 nên `SiglipConfig` không có field `projection_dim` — dim được suy ra từ shape thật
 của batch đầu tiên, ghi kèm cột `dim` trong parquet để đối chiếu với `VECTOR_DIM`
 bên searchcore.
+
+Inference chạy bằng ONNX Runtime (không cần PyTorch/`SiglipModel` ở server) —
+checkpoint gốc được export 1 lần qua `export_siglip_onnx.py` (vision tower + L2
+normalize đã bake vào graph, xem module đó) rồi đẩy lên S3; `load_siglip` chỉ tải
+`model.onnx` + `preprocessor_config.json` về nạp lại.
 """
 
 from __future__ import annotations
@@ -21,63 +26,73 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-DEFAULT_MODEL = "google/siglip-so400m-patch14-384"
 SHARD_SIZE = 50_000
 TIER_KEYFRAME = 2  # IndexTier.INDEX_TIER_KEYFRAME, proto/searchcore/v1/common.proto
 
 
-def load_siglip(name: str = DEFAULT_MODEL, device=None):
-    """Nạp SiglipModel + processor (nạp 1 lần, tái dùng cho mọi video)."""
-    from transformers import SiglipModel, SiglipProcessor
+def load_siglip(name: str, device=None):
+    """Nạp SigLIP đã export ONNX (nạp 1 lần, tái dùng cho mọi video).
 
-    model = SiglipModel.from_pretrained(name).to(device).eval()
-    processor = SiglipProcessor.from_pretrained(name)
-    return model, processor
+    `name` là thư mục chứa `model.onnx` + `preprocessor_config.json` — cục bộ, hoặc
+    `s3://bucket/prefix` (tải về cache dir qua `storage.download_dir`, bỏ qua nếu
+    cache đã có — xem `export_siglip_onnx.py` để tạo bundle này từ checkpoint gốc).
+
+    `device` (nếu có `.type == "cuda"`) chọn `CUDAExecutionProvider`, ngược lại
+    dùng CPU. Trả về `(onnxruntime.InferenceSession, SiglipImageProcessor)`.
+    """
+    import onnxruntime as ort
+    from transformers import SiglipImageProcessor
+
+    if name.startswith("s3://"):
+        from ..storage import download_dir
+
+        name = download_dir(name)
+
+    device_type = getattr(device, "type", device) if device is not None else "cpu"
+    providers = (
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if device_type == "cuda" else ["CPUExecutionProvider"]
+    )
+    session = ort.InferenceSession(os.path.join(name, "model.onnx"), providers=providers)
+    image_processor = SiglipImageProcessor.from_pretrained(name)
+    return session, image_processor
 
 
 def embed_keyframes(
     video_out_dir: str,
     keyframes: list[dict],
-    model,
-    processor,
-    device,
+    session,
+    image_processor,
     *,
     batch_size: int = 64,
 ) -> np.ndarray:
     """Encode ảnh keyframe (theo `keyframe_url`) -> vector fp32 L2-normalized.
 
-    Thứ tự hàng khớp với `keyframes`. Inference chạy fp16 (autocast) trên GPU, ép
-    về fp32 numpy trước khi trả về vì fp32 là bản lưu trữ nguồn sự thật.
+    Thứ tự hàng khớp với `keyframes`. L2-normalize đã nằm sẵn trong graph ONNX
+    (xem `export_siglip_onnx.py::_ImageEncoder`) nên không cần normalize lại.
 
     Dim vector không đọc từ `model.config` (SigLIP không có `projection_dim` như
     CLIP) — batch đầu tiên quyết định dim, dựa theo shape thật của output.
     """
-    import torch
     from PIL import Image
 
     if not keyframes:
         return np.empty((0, 0), dtype=np.float32)
 
-    device_type = device.type if hasattr(device, "type") else str(device)
     vectors = None
 
-    with torch.no_grad():
-        for start in range(0, len(keyframes), batch_size):
-            batch = keyframes[start : start + batch_size]
-            images = [
-                Image.open(os.path.join(video_out_dir, kf["keyframe_url"])).convert("RGB")
-                for kf in batch
-            ]
-            inputs = processor(images=images, return_tensors="pt").to(device)
-            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=device_type == "cuda"):
-                feats = model.get_image_features(**inputs)
-            feats = feats.float()
-            feats = feats / feats.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-            feats = feats.cpu().numpy()
+    for start in range(0, len(keyframes), batch_size):
+        batch = keyframes[start : start + batch_size]
+        images = [
+            Image.open(os.path.join(video_out_dir, kf["keyframe_url"])).convert("RGB")
+            for kf in batch
+        ]
+        pixel_values = image_processor(images=images, return_tensors="np")["pixel_values"]
+        feats = session.run(["image_embeds"], {"pixel_values": pixel_values.astype(np.float32)})[0]
 
-            if vectors is None:
-                vectors = np.empty((len(keyframes), feats.shape[1]), dtype=np.float32)
-            vectors[start : start + len(batch)] = feats
+        if vectors is None:
+            vectors = np.empty((len(keyframes), feats.shape[1]), dtype=np.float32)
+        vectors[start : start + len(batch)] = feats
 
     return vectors
 

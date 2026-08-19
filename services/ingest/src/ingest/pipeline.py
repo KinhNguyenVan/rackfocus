@@ -105,8 +105,7 @@ def process_video(
                 "Cần db_conn (Postgres) để cấp video_id/scene_idx cho payload embedding")
         video_id = get_or_create_video_id(db_conn, name)
         upsert_scenes(db_conn, video_id, scenes_out)
-        vectors = embed_keyframes(
-            out_dir, keyframes, siglip_model, siglip_processor, device)
+        vectors = embed_keyframes(out_dir, keyframes, siglip_model, siglip_processor)
         dump_shards(video_id, name, keyframes, scenes_out, vectors, out_dir)
 
     # 8) Upload keyframes/scenes/embed_*.parquet lên S3 (sau khi mọi thứ đã ghi xong,
@@ -137,7 +136,9 @@ def main() -> None:
     ap.add_argument("--bassl-ckpt", required=True, help="Đường dẫn checkpoint .ckpt của BaSSL")
     ap.add_argument("--asr-model", default=None, help="Tên/đường dẫn model chunkformer")
     ap.add_argument("--siglip-model", default=None,
-                     help="Tên/đường dẫn SigLIP để embed keyframe (bỏ trống = không embed)")
+                     help="Thư mục (cục bộ hoặc s3://bucket/prefix) chứa bundle ONNX "
+                          "(model.onnx + preprocessor_config.json, xem export_siglip_onnx.py) "
+                          "để embed keyframe (bỏ trống = không embed)")
     ap.add_argument("--upload", action="store_true",
                      help="Đẩy keyframes/scenes/embed_*.parquet lên S3 sau mỗi video")
     ap.add_argument("--shot-threshold", type=float, default=0.5)
@@ -167,10 +168,6 @@ def main() -> None:
         from .stages import load_siglip
 
         siglip_model, siglip_processor = load_siglip(args.siglip_model, device)
-    elif args.upload:
-        from .stages import load_siglip
-
-        siglip_model, siglip_processor = load_siglip(device=device)
 
     # Cần Postgres để cấp video_id/scene_idx cho payload khi có embed.
     db_conn = get_conn() if siglip_model is not None else None

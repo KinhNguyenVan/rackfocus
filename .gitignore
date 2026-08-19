@@ -19,6 +19,7 @@ services/be/src/app/pb/*
 *.f16
 *.npy
 *.parquet
+*.onnx
 snapshots/
 models/
 data/

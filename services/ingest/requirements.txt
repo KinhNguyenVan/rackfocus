@@ -3,7 +3,8 @@ pandas
 pyarrow
 torch
 torchvision
-transformers
+transformers>=4.37,<6  # >=4.37 mới có SigLIP; <6 để chặn breaking change kiểu get_image_features
+                       # đổi return type (BaseModelOutputWithPooling) đã gặp ở 5.15.0, xem embed.py
 onnxruntime-gpu
 faiss-cpu
 scenedetect
