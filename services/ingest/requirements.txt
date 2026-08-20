@@ -14,7 +14,14 @@ faster-whisper
 paddleocr
 ultralytics
 boto3
+mypy-boto3-s3>=1.40,<2  # typed S3 boundary for strict static checking
 psycopg[binary]
+# CPU-only domain enrichment job (python -m ingest.domain)
+cerebras-cloud-sdk>=1.91,<2
+google-genai>=2.19,<3
+pydantic>=2.12,<3
+pydantic-settings>=2.10,<3
+pymongo>=4.10,<5
 # Stage shot->scene / keyframe
 opencv-python-headless
 pillow
