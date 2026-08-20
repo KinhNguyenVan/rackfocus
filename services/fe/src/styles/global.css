@@ -1,1 +1,74 @@
-// Token màu, type scale.
+/* =========================================
+   Styles từ index.html (Search Page)
+   ========================================= */
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.container2 {
+  flex: 1;
+}
+.footer {
+  text-align: center;
+  margin-top: 1rem;
+  padding: 10px;
+  background-color: #f8f9fa;
+}
+#imageContainer img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.image-wrapper {
+  position: relative;
+}
+.checkbox-overlay {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 2;
+}
+.order-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: rgba(0, 123, 255, 0.85);
+  color: white;
+  font-size: 0.8rem;
+  font-weight: bold;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#pageWrapper {
+  display: flex;
+  min-height: 100vh;
+}
+#frameSidebar {
+  overflow-y: auto;
+  white-space: normal;
+}
+
+/* =========================================
+   Styles từ AIC25-Submission.html
+   ========================================= */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  animation: spin 1s linear infinite;
+}
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+  -webkit-appearance: none; 
+  margin: 0; 
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
