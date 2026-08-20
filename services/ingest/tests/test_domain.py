@@ -319,7 +319,7 @@ def test_cerebras_semantic_retry_repairs_a_gap() -> None:
     assert completions.calls[0]["seed"] == 0
     assert completions.calls[0]["reasoning_effort"] == "medium"
     assert completions.calls[0]["reasoning_format"] == "hidden"
-    assert completions.calls[0]["max_completion_tokens"] == 8192
+    assert completions.calls[0]["max_completion_tokens"] == 32768
     assert completions.calls[0]["response_format"]["type"] == "json_schema"
     schema = json.dumps(completions.calls[0]["response_format"]["json_schema"])
     assert "minItems" not in schema
@@ -363,7 +363,7 @@ def test_gemini_uses_same_schema_and_normalized_output() -> None:
     assert call["config"].automatic_function_calling.disable is True
     assert call["config"].thinking_config.thinking_level == "MEDIUM"
     assert call["config"].thinking_config.include_thoughts is False
-    assert call["config"].max_output_tokens == 8192
+    assert call["config"].max_output_tokens == 32768
 
 
 def test_provider_is_part_of_inference_fingerprint() -> None:
