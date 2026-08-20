@@ -33,13 +33,13 @@ class IngestConfig(BaseSettings):
     cerebras_base_url: str = "https://api.cerebras.ai"
     cerebras_model: str = "gpt-oss-120b"
     cerebras_timeout_seconds: float = Field(default=60, gt=0)
-    cerebras_max_completion_tokens: int = Field(default=8192, gt=0)
+    cerebras_max_completion_tokens: int = Field(default=32768, gt=0)
     cerebras_reasoning_effort: ReasoningLevel = "medium"
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.7-flash"
     gemini_timeout_seconds: float = Field(default=60, gt=0)
-    gemini_max_output_tokens: int = Field(default=8192, gt=0)
+    gemini_max_output_tokens: int = Field(default=32768, gt=0)
     gemini_thinking_level: ReasoningLevel = "medium"
 
 

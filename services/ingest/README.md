@@ -120,13 +120,13 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/rackfocus?retryW
 DOMAIN_PROVIDER=gemini
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.7-flash
-GEMINI_MAX_OUTPUT_TOKENS=8192
+GEMINI_MAX_OUTPUT_TOKENS=32768
 GEMINI_THINKING_LEVEL=medium
 
 # Hoặc Cerebras
 CEREBRAS_API_KEY=...
 CEREBRAS_MODEL=gpt-oss-120b
-CEREBRAS_MAX_COMPLETION_TOKENS=8192
+CEREBRAS_MAX_COMPLETION_TOKENS=32768
 CEREBRAS_REASONING_EFFORT=medium
 ```
 
@@ -164,11 +164,13 @@ thành công.
 
 Hai provider mặc định dùng mức suy luận `medium` và chỉ trả JSON theo schema;
 Cerebras đặt `reasoning_format=hidden`, còn Gemini không yêu cầu thought summary.
-Giới hạn 8192 là trần bảo vệ, không phải số token bắt buộc phải sinh. Gemini và
-Cerebras đều dừng job nếu output chạm giới hạn để không lưu JSON bị cắt; validator
-ứng dụng tiếp tục kiểm tra coverage, taxonomy và keyword sau khi SDK đã kiểm tra
-cấu trúc. Với model override không hỗ trợ reasoning level, adapter bỏ cấu hình
-reasoning thay vì gửi tham số không hợp lệ.
+Giới hạn 32768 của hai provider là trần bảo vệ, không phải số token bắt buộc phải
+sinh. Cả Gemini và Cerebras đều tính thinking trong ngân sách generation; Gemini
+3.6/3.7 hỗ trợ tối đa 65536 output tokens, còn Cerebras `gpt-oss-120b` hỗ trợ tối
+đa 40960 completion tokens. Cả hai provider đều dừng job nếu output chạm giới hạn
+để không lưu JSON bị cắt; validator ứng dụng tiếp tục kiểm tra coverage, taxonomy
+và keyword sau khi SDK đã kiểm tra cấu trúc. Với model override không hỗ trợ
+reasoning level, adapter bỏ cấu hình reasoning thay vì gửi tham số không hợp lệ.
 
 ### Domain, topic và keywords
 
