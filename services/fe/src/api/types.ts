@@ -44,3 +44,13 @@ export type SearchResponse = {
 		used_llm: boolean;
 	};
 };
+
+// Khớp services/be/src/app/api/browse.py -- GET /api/neighbors.
+export type NeighborFrame = {
+	url: string;
+	frame: number;
+};
+
+export type NeighborsResponse = {
+	frames: NeighborFrame[];
+};

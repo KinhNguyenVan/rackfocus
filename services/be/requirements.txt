@@ -11,3 +11,7 @@ boto3
 httpx
 litellm
 pydantic-settings
+# clients/s3.py (AWSStorageHelper -- api/browse.py::/api/neighbors dùng)
+requests
+tqdm
+python-dotenv

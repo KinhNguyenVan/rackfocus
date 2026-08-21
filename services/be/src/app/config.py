@@ -39,8 +39,11 @@ class Settings(BaseSettings):
     # 300: khớp thiết kế rerank (coarse top 1k -> rerank exact top 300) / exact
     # (brute-force thẳng top 300) — trước là 200, cắt mất FE xin 300.
     max_top_k: int = 300
-    # Chặn 7 keyframe/shot chiếm hết trang (corpus CỐ Ý dày như vậy).
-    diversity_max_per_video: int = 3
+    # 0 = tắt hẳn: trả nguyên top_k theo đúng thứ tự core xếp hạng, không dedup theo
+    # video. Trước để 3 (chặn 7 keyframe/shot chiếm hết trang) nhưng làm top_k=300 xin
+    # bị cắt còn vài chục nếu top match dồn vào ít video — muốn xem đủ top-N thật thì
+    # tắt, đánh đổi là có thể thấy nhiều frame gần giống hệt nhau liền kề.
+    diversity_max_per_video: int = 0
     diversity_min_time_gap_sec: float = 0.0
     diversity_dedup_threshold: float = 0.0
 

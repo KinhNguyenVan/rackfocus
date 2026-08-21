@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { SearchHit } from "./api/types";
+import { neighbors as fetchNeighbors } from "./api/client";
+import type { NeighborFrame, SearchHit } from "./api/types";
 import { useSearch } from "./hooks/useSearch";
 import "./styles/global.css";
 
@@ -13,6 +14,15 @@ type Result = SearchHit & {
   url: string;
   video: string;
 };
+
+// Hash chuỗi ổn định trong phiên (djb2) -- dùng làm point_id giả cho frame lân cận
+// (không có point_id thật vì không đi qua snapshot), chỉ cần duy nhất/lặp lại được,
+// không cần khớp cách core băm point_id thật (blake2b).
+function hashString(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i);
+  return h >>> 0;
+}
 const topics = [
   "tin tức",
   "Tin tức+múa lân",
@@ -89,11 +99,53 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [qaAnswer, setQaAnswer] = useState("");
   const [output, setOutput] = useState("");
   const [framesOpen, setFramesOpen] = useState(false);
+  const [neighborFrames, setNeighborFrames] = useState<NeighborFrame[]>([]);
+  const [neighborVideo, setNeighborVideo] = useState("");
+  const [neighborsLoading, setNeighborsLoading] = useState(false);
+  const [neighborsError, setNeighborsError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState({
     visible: false,
     x: 0,
     y: 0,
     targetUrl: "",
+    targetVideo: "",
+  });
+
+  const loadNeighbors = (url: string, video: string) => {
+    setFramesOpen(true);
+    setNeighborVideo(video);
+    setNeighborsLoading(true);
+    setNeighborsError(null);
+    fetchNeighbors(url, 25, 25)
+      .then((data) => setNeighborFrames(data.frames ?? []))
+      .catch((cause: unknown) => {
+        setNeighborFrames([]);
+        setNeighborsError(cause instanceof Error ? cause.message : "Load frames failed");
+      })
+      .finally(() => setNeighborsLoading(false));
+  };
+
+  // Frame lân cận chỉ có url+frame (list S3, không đi qua snapshot) -- không có
+  // point_id/keyframe_time thật. Dựng Result "đủ dùng" để chọn được như ảnh kết quả
+  // chính: point_id băm từ video+frame (chỉ cần ổn định trong phiên, không cần khớp
+  // point_id thật của core), keyframe_time xấp xỉ frame/30fps vì map notebook cũng
+  // suy timestamp theo cùng tỉ lệ đó.
+  const neighborToResult = (video: string, nf: NeighborFrame): Result => ({
+    point_id: hashString(`${video}:${nf.frame}`),
+    row: -1,
+    score: 0,
+    rank: -1,
+    video_name: video,
+    frame: nf.frame,
+    keyframe_time: nf.frame / 30,
+    start_sec: 0,
+    end_sec: 0,
+    keyframe_url: nf.url,
+    clip_url: "",
+    scene_idx: -1,
+    has_speech: false,
+    url: nf.url,
+    video,
   });
 
   // top_k=300: khớp thiết kế "rerank lấy top 1k rồi rerank exact top 300 / exact brute-
@@ -266,9 +318,9 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     goSubmission();
   };
 
-  const handleContextMenu = (e: React.MouseEvent, url: string) => {
+  const handleContextMenu = (e: React.MouseEvent, url: string, video: string) => {
     e.preventDefault();
-    setContextMenu({ visible: true, x: e.pageX, y: e.pageY, targetUrl: url });
+    setContextMenu({ visible: true, x: e.pageX, y: e.pageY, targetUrl: url, targetVideo: video });
   };
 
   return (
@@ -322,10 +374,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         >
           <button
             className="dropdown-item"
-            onClick={() => {
-              setFramesOpen(true);
-              alert("Mock: Load frames (chưa nối API)");
-            }}
+            onClick={() => loadNeighbors(contextMenu.targetUrl, contextMenu.targetVideo)}
           >
             📽️ Xem 25 frames trước/sau
           </button>
@@ -612,7 +661,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                               className="card-img-top main-img"
                               alt="scene"
                               onContextMenu={(e) =>
-                                handleContextMenu(e, result.url)
+                                handleContextMenu(e, result.url, result.video)
                               }
                             />
                             <div className="card-body p-2">
@@ -648,19 +697,22 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         </div>
       </div>
 
-      {/* Right Sidebar (Frames) */}
+      {/* Right Sidebar (Frames) -- flexbox, không dùng float: float trước đây làm
+          content tràn khỏi width khai báo, panel che gần hết màn hình. */}
       <div
         id="frameSidebar"
-        className="position-fixed top-0 end-0 bg-light shadow h-100"
+        className="position-fixed top-0 end-0 bg-light shadow h-100 d-flex"
         style={{
           width: framesOpen ? "400px" : "40px",
-          transition: "0.3s",
+          maxWidth: "90vw",
+          transition: "0.2s",
           zIndex: 1050,
+          overflow: "hidden",
         }}
       >
         <div
           className="d-flex justify-content-center align-items-center h-100 border-start"
-          style={{ width: "40px", float: "left", cursor: "pointer" }}
+          style={{ width: "40px", flexShrink: 0, cursor: "pointer" }}
           onClick={() => setFramesOpen(!framesOpen)}
         >
           <button className="btn btn-sm btn-outline-secondary">
@@ -671,19 +723,60 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
           <div
             id="sidebarContent"
             style={{
-              width: "360px",
-              float: "left",
+              flex: 1,
+              minWidth: 0,
               padding: "10px",
               height: "100%",
               overflowY: "auto",
-              display: "block",
             }}
           >
             <div className="d-flex justify-content-between align-items-center border-bottom mb-2">
-              <h6 className="mb-0">Frames</h6>
+              <h6 className="mb-0">
+                Frames (25 trước/sau) {neighborVideo && `— ${neighborVideo}`}
+              </h6>
             </div>
-            <div className="alert alert-warning p-2 small">
-              Mock: /frames?url=... chưa nối BE.
+            {neighborsLoading && (
+              <div className="text-center my-3">
+                <div className="spinner-border spinner-border-sm text-primary" role="status">
+                  <span className="visually-hidden">Loading...</span>
+                </div>
+              </div>
+            )}
+            {neighborsError && (
+              <div className="alert alert-danger p-2 small">{neighborsError}</div>
+            )}
+            {!neighborsLoading && !neighborsError && neighborFrames.length === 0 && (
+              <div className="text-muted small">
+                Bấm chuột phải vào 1 ảnh kết quả rồi chọn "Xem 25 frames trước/sau".
+              </div>
+            )}
+            <div className="row row-cols-2 g-1">
+              {neighborFrames.map((nf) => {
+                const item = neighborToResult(neighborVideo, nf);
+                const isSelected = selected.some(
+                  (s) => s.point_id === item.point_id,
+                );
+                return (
+                  <div className="col p-1" key={item.point_id}>
+                    <div className="card position-relative">
+                      <img
+                        src={nf.url}
+                        className="img-fluid rounded"
+                        alt="neighbor frame"
+                      />
+                      <div className="card-body p-1 text-center">
+                        <input
+                          type="checkbox"
+                          className="form-check-input me-1"
+                          checked={isSelected}
+                          onChange={() => toggle(item)}
+                        />
+                        <small>#{nf.frame}</small>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
