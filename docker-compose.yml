@@ -49,12 +49,23 @@ services:
       - ${SNAPSHOT_HOST_DIR:-./data/snapshots}:/data/snapshots:ro
       - ${MODELS_HOST_DIR:-./data/models}:/models:ro
       - sc_sock:/var/run/searchcore
+      # Cache snapshot + encoder tải từ S3. PHẢI ghi được và PHẢI bền:
+      #   - hai mount trên đều :ro, không có volume này thì `download_dir` rơi về /tmp
+      #     ephemeral -> tải lại vài GB mỗi lần `up --force-recreate`;
+      #   - nếu /tmp là tmpfs thì lượng đó bị tính vào cgroup 12G -> nổ giới hạn.
+      # Đường dẫn phải khớp MODEL_CACHE_DIR trong .env.
+      - sc_cache:/var/cache/searchcore
     healthcheck:
       test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('/var/run/searchcore/sc.sock'); sys.exit(0)"]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 180s     # load 6.7GB index + warmup, đừng để bị restart vòng lặp
+      # 180s vốn được tính cho việc load index từ bind mount cục bộ, KHÔNG tính thời gian
+      # tải qua mạng. Với SNAPSHOT_S3 + ENCODER_S3, lần khởi động lạnh phải kéo ~3.7GB
+      # (snapshot ~1.9GB + text encoder ~1.8GB) rồi mới validate checksum và warmup.
+      # Đo throughput S3 từ host thật rồi chỉnh lại con số này. Lần khởi động sau có
+      # sc_cache thì nhanh như cũ.
+      start_period: 600s
     deploy:
       resources:
         limits: { memory: 12G }
@@ -100,3 +111,4 @@ volumes:
   redisdata:
   caddy_data:
   sc_sock:
+  sc_cache:   # snapshot + encoder tải từ S3, giữ qua các lần recreate container

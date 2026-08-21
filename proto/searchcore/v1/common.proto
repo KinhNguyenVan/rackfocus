@@ -123,6 +123,13 @@ message ResponseMeta {
   Timings timings      = 3;
   repeated string warnings = 4;
   string  collection   = 5;
+
+  // Tag core THỰC SỰ đã lọc. Phải trả về: nếu không, user không có cách nào biết mình
+  // vừa search 500 giờ video hay 8 giờ — hai trường hợp hiện ra giống hệt nhau trên
+  // màn hình, và lọc sai tag cho một trang kết quả trông rất tự tin từ vùng corpus
+  // không chứa đáp án. Rỗng = đã search toàn bộ.
+  // Số candidate xem Timings.filter_matched, chiến lược xem Timings.filter_strategy_used.
+  repeated uint32 tags_used = 6;
 }
 
 message Timings {
@@ -181,6 +188,22 @@ message Filter {
 
   FilterStrategy strategy = 14;
   uint64 tenant_id        = 15;  // scope cứng
+
+  // Tag do LLM chọn từ query. Mỗi frame mang ĐÚNG MỘT tag nên tag phân hoạch corpus:
+  // candidate = hợp các bucket, không trùng lặp.
+  //
+  // Rỗng = không lọc theo tag (search toàn bộ).
+  //
+  // AND với mọi field khác của Filter — không được honour `tags` rồi âm thầm bỏ
+  // `allow`/`video_ids`/`min_start_sec`.
+  //
+  // uint32 ở đây nhưng tags.npy là uint16: giá trị ngoài vocab phải trả
+  // INVALID_ARGUMENT, không được để thành IndexError.
+  //
+  // CẢNH BÁO ngữ nghĩa: lọc tag là CỨNG, không phải hạ hạng. Frame mang tag không
+  // được chọn là KHÔNG THỂ với tới ở mọi ef_search/top_k. Recall hệ thống =
+  // P(LLM chọn đúng tag) x recall trong subset. Xem ResponseMeta.tags_used.
+  repeated uint32 tags = 16;
 }
 
 // Định hình danh sách trả về. Trong thi đấu, 10 frame gần giống hệt nhau
@@ -210,6 +233,20 @@ message Payload {
   string clip_key     = 10;
   IndexTier tier      = 11;
   map<string, string> extra = 12;
+
+  // Payload thật từ ingest định danh video bằng TÊN, không có video_id int (notebook
+  // Kaggle không có Postgres). Thiếu field này thì Diversity.max_per_video group theo
+  // video_id=0 cho mọi row -> top_k=50 trả về 3.
+  string video_name = 13;
+
+  // Chỉ số frame trong video. Cần để nộp bài: point_id là hash blake2b, không phân
+  // giải lại được thành (video, frame).
+  int64 frame = 14;
+
+  // Thời điểm của CHÍNH keyframe này. Khác start_sec/end_sec — hai cái đó là khoảng
+  // thời gian của SCENE chứa nó, và scene gồm nhiều shot, nên seek theo start_sec
+  // lệch hàng chục giây so với frame đã khớp.
+  double keyframe_time = 15;
 }
 
 message Point {

@@ -6,13 +6,25 @@ torchvision
 transformers>=4.37,<6  # >=4.37 mới có SigLIP; <6 để chặn breaking change kiểu get_image_features
                        # đổi return type (BaseModelOutputWithPooling) đã gặp ở 5.15.0, xem embed.py
 onnxruntime-gpu
+onnx          # torch.onnx.export(dynamo=False) cần package này,
+              # KHÔNG phải onnxruntime. Thiếu -> OnnxExporterError lúc export.
 faiss-cpu
 scenedetect
 faster-whisper
 paddleocr
 ultralytics
 boto3
+mypy-boto3-s3>=1.40,<2  # typed S3 boundary for strict static checking
 psycopg[binary]
+# CPU-only domain enrichment job (python -m ingest.domain)
+pydantic>=2.12,<3
+# typing.override chỉ có từ 3.12; ta chạy 3.11 nên lấy từ đây.
+typing-extensions>=4.12
+pydantic-settings>=2.10,<3
+# LLM domain enrichment: một client cho mọi provider, cùng convention với
+# services/be nên hai service dùng chung .env.
+litellm>=1.97,<2
+pymongo>=4.10,<5
 # Stage shot->scene / keyframe
 opencv-python-headless
 pillow

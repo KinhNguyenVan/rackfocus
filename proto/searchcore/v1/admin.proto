@@ -14,6 +14,8 @@ service AdminService {
   rpc GetCollection    (GetCollectionRequest)    returns (GetCollectionResponse);
   rpc SetAlias         (SetAliasRequest)         returns (SetAliasResponse);
 
+  rpc GetTagVocab      (GetTagVocabRequest)      returns (GetTagVocabResponse);
+
   rpc LoadSnapshot     (LoadSnapshotRequest)     returns (LoadSnapshotResponse);
   rpc CreateSnapshot   (CreateSnapshotRequest)   returns (CreateSnapshotResponse);
   rpc ListSnapshots    (ListSnapshotsRequest)    returns (ListSnapshotsResponse);
@@ -103,6 +105,36 @@ message SetAliasRequest {
   string collection_name = 3;
 }
 message SetAliasResponse { bool ok = 1; string message = 2; }
+
+// ── Tag vocabulary ──────────────────────────────────────────────────
+
+// `tag_vocab.json` nằm trong snapshot của core, nhưng BE cần nó để đưa cho LLM chọn
+// tag. BE đọc thẳng thư mục snapshot là phá service boundary và phá atomic swap (BE
+// có thể đọc vocab của v1 trong khi core đã serve v2), nên phải đi qua RPC này.
+//
+// Lưu ý chi phí: ~500 mô tả tag là 15-25k prompt token MỖI query. Cân nhắc cache
+// vocab ở BE theo `snapshot_ver`, và/hoặc rút gọn mô tả trước khi đưa vào prompt.
+message GetTagVocabRequest { RequestContext ctx = 1; }
+
+message TagInfo {
+  uint32 id          = 1;
+  string name        = 2;
+  string description = 3;
+  // Số frame đang mang tag này. Tag phân bố head-heavy, và LLM có xu hướng chọn tag
+  // rộng vì tag rộng liên quan tới nhiều query hơn -> BE dùng số này để biết chọn tag
+  // nào sẽ không thu hẹp được gì.
+  int64  point_count = 4;
+}
+
+message GetTagVocabResponse {
+  repeated TagInfo tags = 1;
+  // BE phải pin vocab theo đúng snapshot đang serve: tag id chỉ có nghĩa trong 1 bản.
+  string snapshot_ver     = 2;
+  // Row mang sentinel 65535 (chưa gán tag). Những row này KHÔNG thuộc bucket nào nên
+  // mọi query có tag đều loại hết chúng -> cần biết tỉ lệ phủ.
+  int64  unassigned_count = 3;
+  ResponseMeta meta       = 4;
+}
 
 // ── Snapshot ────────────────────────────────────────────────────────
 
