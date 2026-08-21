@@ -6,11 +6,12 @@ import { useSearch } from "./hooks/useSearch";
 import "./styles/global.css";
 
 type Task = "kis" | "qa" | "trake";
+// SearchHit đã có video_name/frame/keyframe_url thật (services/be/src/app/api/search.py)
+// -- url/video là alias tiện dùng trong UI, point_id là khoá duy nhất thật (không có
+// scene_id toàn cục nào cả, scene_idx chỉ là index trong 1 video).
 type Result = SearchHit & {
   url: string;
   video: string;
-  frame: number;
-  scene_id?: number;
 };
 const topics = [
   "tin tức",
@@ -94,11 +95,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     () =>
       hits.map((hit) => ({
         ...hit,
-        video: `scene_${hit.scene_id}`,
-        frame: (hit.rank + 1) * 1000,
+        video: hit.video_name,
         url:
-          hit.url ??
-          `https://placehold.co/640x360/e9eef0/354d58?text=scene+${hit.scene_id}`,
+          hit.keyframe_url ||
+          `https://placehold.co/640x360/e9eef0/354d58?text=${hit.video_name}%23${hit.frame}`,
       })),
     [hits],
   );
@@ -134,8 +134,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
 
   const toggle = (result: Result) => {
     setSelected((items) =>
-      items.some((item) => item.scene_id === result.scene_id)
-        ? items.filter((item) => item.scene_id !== result.scene_id)
+      items.some((item) => item.point_id === result.point_id)
+        ? items.filter((item) => item.point_id !== result.point_id)
         : [...items, result],
     );
   };
@@ -165,6 +165,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     }
   }
 
+  // ms thật từ keyframe_time (giây, BE tính từ payload) -- chính xác hơn suy ra từ
+  // frame*33 vì đó giả định cứng 30fps, không đúng với mọi video.
+  const toMs = (item: Result) => Math.round(item.keyframe_time * 1000);
+
   function exportResult() {
     if (!selected.length)
       return alert(`${task.toUpperCase()}: Cần chọn ít nhất 1 frame.`);
@@ -181,8 +185,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                 answers: [
                   {
                     mediaItemName: first.video,
-                    start: first.frame * 33,
-                    end: last.frame * 33,
+                    start: toMs(first),
+                    end: toMs(last),
                   },
                 ],
               },
@@ -202,7 +206,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
             answerSets: [
               {
                 answers: [
-                  { text: `QA-${qaAnswer}-${first.video}-${first.frame * 33}` },
+                  { text: `QA-${qaAnswer}-${first.video}-${toMs(first)}` },
                 ],
               },
             ],
@@ -222,7 +226,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
               {
                 answers: [
                   {
-                    text: `TR-${first.video}-${selected.map((item) => item.frame).join(",")}`,
+                    text: `TR-${first.video}-${selected.map((item) => toMs(item)).join(",")}`,
                   },
                 ],
               },
@@ -258,7 +262,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         <h6>Selected</h6>
         <div id="selectedList" className="row row-cols-1 g-2">
           {selected.map((item, index) => (
-            <div className="col" key={item.scene_id}>
+            <div className="col" key={item.point_id}>
               <div className="card">
                 <img
                   src={item.url}
@@ -275,7 +279,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                     onClick={() => toggle(item)}
                   />
                   <small>
-                    {index + 1}. scene_{item.scene_id}
+                    {index + 1}. {item.video}#{item.frame}
                   </small>
                 </div>
               </div>
@@ -511,16 +515,16 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                   >
                     {results.map((result) => {
                       const isSelected = selected.some(
-                        (item) => item.scene_id === result.scene_id,
+                        (item) => item.point_id === result.point_id,
                       );
                       const selectedIndex =
                         selected.findIndex(
-                          (item) => item.scene_id === result.scene_id,
+                          (item) => item.point_id === result.point_id,
                         ) + 1;
                       return (
                         <div
                           className="col p-2 text-center"
-                          key={result.scene_id}
+                          key={result.point_id}
                         >
                           <div className="card position-relative">
                             <img
@@ -538,7 +542,9 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                                 checked={isSelected}
                                 onChange={() => toggle(result)}
                               />
-                              <small>scene_{result.scene_id}</small>
+                              <small>
+                                {result.video}#{result.frame}
+                              </small>
                             </div>
                             {isSelected && (
                               <span className="badge bg-primary position-absolute top-0 start-0 m-1 order-badge">

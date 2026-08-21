@@ -28,7 +28,7 @@ export function useSearch(query: string, topK = 10) {
 			.then((data) => {
 				if (currentRequest !== requestId.current) return;
 				setHits(data.hits ?? []);
-				setTotalMs(data.timings?.total_ms ?? null);
+				setTotalMs(data.timings_ms?.total ?? null);
 			})
 			.catch((cause: unknown) => {
 				if (controller.signal.aborted || currentRequest !== requestId.current) return;

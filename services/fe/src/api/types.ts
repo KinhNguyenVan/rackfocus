@@ -1,17 +1,42 @@
+// Khớp services/be/src/app/api/search.py — SearchRequest/Hit/SearchResponse.
 export type SearchRequest = {
 	text: string;
 	top_k?: number;
+	use_llm?: boolean;
+	tags?: number[];
+	min_score?: number;
 };
 
 export type SearchHit = {
-	scene_id: number;
+	point_id: number;
+	row: number;
 	score: number;
 	rank: number;
-	url?: string;
+	video_name: string;
+	frame: number;
+	keyframe_time: number;
+	start_sec: number;
+	end_sec: number;
+	keyframe_url: string;
+	clip_url: string;
+	scene_idx: number;
+	has_speech: boolean;
 };
 
 export type SearchResponse = {
 	hits: SearchHit[];
-	timings?: { total_ms?: number };
-	snapshot?: string;
+	tags_used: number[];
+	candidate_count: number;
+	corpus_count: number;
+	strategy: string;
+	warnings: string[];
+	snapshot_ver: string;
+	timings_ms: Record<string, number>;
+	enrichment: {
+		model: string;
+		tags: number[];
+		enriched_text: string;
+		error: string;
+		used_llm: boolean;
+	};
 };
