@@ -258,9 +258,13 @@ def test_pydantic_schema_is_strict_without_custom_cleanup() -> None:
 class FakeCompletion:
     """Giả `litellm.completion`. Trả đúng shape litellm: choices/usage/id/model."""
 
-    def __init__(self, contents: list[str], finish_reason: str = "stop") -> None:
+    def __init__(
+        self, contents: list[str], finish_reason: str = "stop",
+        completion_tokens: int | None = None,
+    ) -> None:
         self.contents = iter(contents)
         self.finish_reason = finish_reason
+        self.completion_tokens = completion_tokens
         self.calls: list[dict] = []
 
     def __call__(self, **kwargs):
@@ -276,7 +280,8 @@ class FakeCompletion:
                 )
             ],
             usage=SimpleNamespace(
-                model_dump=lambda **_kwargs: {"total_tokens": 42}
+                completion_tokens=self.completion_tokens,
+                model_dump=lambda **_kwargs: {"total_tokens": 42},
             ),
         )
 
@@ -311,7 +316,7 @@ def test_semantic_retry_repairs_a_gap() -> None:
     assert call["temperature"] == 0
     assert call["reasoning_effort"] == "medium"
     assert call["reasoning_format"] == "hidden"
-    assert call["max_tokens"] == 32768
+    assert call["max_tokens"] == 256000
     assert call["response_format"]["type"] == "json_schema"
     # Cerebras strict mode từ chối các annotation này.
     schema = json.dumps(call["response_format"]["json_schema"])
@@ -329,6 +334,25 @@ def test_rejects_truncated_output() -> None:
 
     with pytest.raises(RuntimeError, match="output bị cắt"):
         enricher.analyze("L21_V002", scenes(1))
+
+
+def test_truncated_output_below_configured_max_blames_provider_cap_not_max_tokens() -> None:
+    """completion_tokens thật (vd 40000, cap của Cerebras cho gpt-oss-120b/gemma-4-31b)
+    THẤP HƠN max_tokens đang xin (DOMAIN_LLM_MAX_TOKENS mặc định 256000) -> lỗi phải nói
+    rõ đây là cap phía provider, KHÔNG được khuyên "tăng DOMAIN_LLM_MAX_TOKENS" (vô ích,
+    provider cắt cứng bất kể client xin bao nhiêu)."""
+    content = json.dumps({"segments": [segment(0, 0, "Thể thao", "Đua xe")]})
+    enricher = LiteLLMDomainEnricher(
+        model="cerebras/gpt-oss-120b",
+        completion=FakeCompletion(
+            [content], finish_reason="length", completion_tokens=40_000
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="CAP CỦA PROVIDER") as exc_info:
+        enricher.analyze("L21_V002", scenes(1))
+    assert "tăng DOMAIN_LLM_MAX_TOKENS sẽ không giúp" in str(exc_info.value)
+    assert "--model" in str(exc_info.value)
 
 
 def test_gemini_keeps_full_schema_and_maps_thinking() -> None:

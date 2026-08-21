@@ -38,7 +38,7 @@ class IngestConfig(BaseSettings):
     domain_llm_api_key: str = ""
     domain_llm_api_base: str = ""
     domain_llm_timeout_seconds: float = Field(default=60, gt=0)
-    domain_llm_max_tokens: int = Field(default=32768, gt=0)
+    domain_llm_max_tokens: int = Field(default=256000, gt=0)
     # Cerebras gọi là reasoning_effort, Gemini gọi là thinking_level — cùng một nút vặn,
     # litellm map sang tên của từng provider.
     domain_reasoning_effort: ReasoningLevel = "medium"

@@ -153,10 +153,30 @@ class LiteLLMDomainEnricher(DomainEnricher):
 
         choice = response.choices[0]
         if choice.finish_reason == "length":
-            raise RuntimeError(
-                f"{self.provider} output bị cắt; tăng DOMAIN_LLM_MAX_TOKENS "
-                f"(đang {config.domain_llm_max_tokens})"
+            usage = getattr(response, "usage", None)
+            used = getattr(usage, "completion_tokens", None)
+            # Cerebras cap completion token CỨNG phía server theo model (gpt-oss-120b và
+            # gemma-4-31b đều 40k) bất kể max_tokens client xin — "tăng
+            # DOMAIN_LLM_MAX_TOKENS" chỉ giúp khi request đang XIN THẤP HƠN cap thật của
+            # model. Nếu completion_tokens thật đã chạm/vượt max_tokens đang cấu hình thì
+            # đây là request-side, tăng có thể giúp; còn nếu completion_tokens THẤP HƠN
+            # max_tokens cấu hình rõ ràng (như 40k < 256k) thì đó là cap phía provider —
+            # tăng thêm không có tác dụng, cần đổi provider/model hoặc giảm
+            # DOMAIN_REASONING_EFFORT (reasoning ăn phần lớn budget ở model có reasoning).
+            hint = (
+                f"completion_tokens thật={used}, max_tokens đang xin="
+                f"{config.domain_llm_max_tokens}. "
+                + (
+                    "completion_tokens thật < max_tokens xin -> đây là CAP CỦA PROVIDER "
+                    "cho model này, KHÔNG phải do max_tokens xin thấp -- tăng "
+                    "DOMAIN_LLM_MAX_TOKENS sẽ không giúp. Thử --model provider/model khác "
+                    "(vd gemini/gemini-3.7-flash) cho video này, hoặc giảm "
+                    "DOMAIN_REASONING_EFFORT để dành budget cho JSON output."
+                    if isinstance(used, int) and used < config.domain_llm_max_tokens
+                    else "tăng DOMAIN_LLM_MAX_TOKENS."
+                )
             )
+            raise RuntimeError(f"{self.provider} output bị cắt; {hint}")
         content = choice.message.content
         if not content:
             raise ValueError(f"{self.provider} trả content rỗng")

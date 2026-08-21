@@ -23,3 +23,7 @@ services/be/src/app/pb/*
 snapshots/
 models/
 data/
+
+# output của AIC_KeyframeSceneMap.ipynb — regenerable từ S3, file gộp root-level (2 file
+# 200MB+) vượt giới hạn 100MB/file của GitHub. Upload lên S3 qua UPLOAD_MAP=True nếu cần lưu.
+maps/
