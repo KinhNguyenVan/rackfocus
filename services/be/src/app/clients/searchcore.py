@@ -88,12 +88,21 @@ async def encode(text: str, *, request_id: str = "", timeout: float = 3.0) -> li
 async def search(vector, *, top_k: int, tags=None, request_id: str = "",
                  min_score: float | None = None, with_payload: bool = True,
                  max_per_video: int = 0, min_time_gap_sec: float = 0.0,
-                 dedup_threshold: float = 0.0, timeout: float = 2.0):
+                 dedup_threshold: float = 0.0, exact: bool = False,
+                 timeout: float = 2.0):
+    """`exact=True` ép `FILTER_STRATEGY_EXACT_SUBSET` -- brute-force TOÀN corpus (không
+    tag) hoặc toàn bộ candidate theo tag, bỏ qua HNSW hoàn toàn. Mặc định (`exact=False`)
+    để core tự chọn: có tag hẹp -> EXACT_SUBSET trên subset, không tag/subset rộng ->
+    2-tier HNSW+SQ8 coarse rồi rerank exact trên top `rerank_candidates` (docs/search-design.md §4).
+    """
     req = pb.SearchRequest(
         ctx=_ctx(request_id),
         query=[pb.QueryPart(vector=cpb.Vector(values=list(vector)))],
         top_k=top_k,
-        filter=cpb.Filter(tags=list(tags or [])),
+        filter=cpb.Filter(
+            tags=list(tags or []),
+            strategy=cpb.FILTER_STRATEGY_EXACT_SUBSET if exact else cpb.FILTER_STRATEGY_UNSPECIFIED,
+        ),
         params=pb.SearchParams(min_score=min_score or 0.0),
         diversity=cpb.Diversity(max_per_video=max_per_video,
                                 min_time_gap_sec=min_time_gap_sec,

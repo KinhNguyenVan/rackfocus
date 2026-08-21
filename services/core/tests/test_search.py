@@ -77,6 +77,29 @@ def test_no_tags_searches_whole_corpus(snap):
     assert res.tags_used == ()
 
 
+def test_forced_exact_subset_without_tags_brute_forces_whole_corpus(snap, truth):
+    """UI 'exact': không tag (cand=None) + requested_strategy=EXACT_SUBSET ép brute-force
+    TOÀN corpus, bỏ qua HNSW hoàn toàn. cand=None trước đây chỉ là sentinel cho nhánh
+    HNSW -- ép EXACT_SUBSET không tag từng crash ở _rerank(snap, None, ...)."""
+    q = query(snap)
+    res = S.search(snap, q, top_k=10, tags=None,
+                   requested_strategy=S.STRATEGY_EXACT_SUBSET)
+    assert res.strategy == S.STRATEGY_EXACT_SUBSET
+
+    want = np.argsort(-(truth @ q))[:10]
+    np.testing.assert_array_equal(res.rows, want)
+
+
+def test_forced_exact_subset_without_tags_still_filters_tombstone(snap):
+    tomb = np.zeros((N + 7) // 8, dtype=np.uint8)
+    tomb[0] |= np.uint8(1)  # row 0 đã xoá
+    snap.tombstone = tomb
+
+    res = S.search(snap, query(snap, row=0), top_k=N,
+                   tags=None, requested_strategy=S.STRATEGY_EXACT_SUBSET)
+    assert 0 not in res.rows.tolist()
+
+
 # --------------------------- tombstone ---------------------------
 def test_tombstone_filtered_before_ranking(snap, truth):
     """Xoá 3 row đứng đầu -> vẫn phải trả ĐỦ top_k, và không có row nào đã xoá."""

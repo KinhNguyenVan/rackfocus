@@ -122,7 +122,15 @@ def search(snap, qvec: np.ndarray, *, top_k: int = 10, tags=None,
     # ── search ───────────────────────────────────────────────────────
     t0 = time.perf_counter()
     if strategy == STRATEGY_EXACT_SUBSET:
-        rows, scores = _rerank(snap, cand, qvec, top_k)
+        # cand=None (không tag) chỉ là sentinel "bỏ IDSelector" cho nhánh HNSW bên dưới.
+        # Ép EXACT_SUBSET mà không có tag (UI "exact": brute-force TOÀN corpus, không
+        # qua HNSW) thì phải tự dựng dải đủ rồi lọc tombstone -- nhánh `if tags:` ở trên
+        # chỉ lọc tombstone khi CÓ tag, cand=None chưa từng qua bước đó.
+        exact_cand = cand
+        if exact_cand is None:
+            exact_cand = np.arange(universe, dtype=np.int64)
+            exact_cand = exact_cand[snap.alive_mask(exact_cand)]
+        rows, scores = _rerank(snap, exact_cand, qvec, top_k)
         t["coarse_ms"] = 0.0
     else:
         coarse = _coarse(snap, qvec, max(rerank_candidates, top_k), cand)

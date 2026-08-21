@@ -77,6 +77,13 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [flag, setFlag] = useState("");
   const [service, setService] = useState("image");
   const [chosenTopics, setChosenTopics] = useState<string[]>([]);
+  // Tắt = bỏ qua bước LLM chọn tag ở BE (services/be/src/app/api/search.py::_enrich
+  // đã có sẵn use_llm), core search toàn bộ corpus không lọc theo tag.
+  const [useLlm, setUseLlm] = useState(true);
+  // "rerank" (mặc định) = core tự chọn: HNSW+SQ8 coarse -> rerank exact trên top
+  // rerank_candidates (hoặc EXACT_SUBSET nếu tag đủ hẹp). "exact" = ép brute-force
+  // toàn candidate/corpus, bỏ qua HNSW hoàn toàn -- chậm hơn, không xấp xỉ.
+  const [exactMode, setExactMode] = useState(false);
   const [selected, setSelected] = useState<Result[]>([]);
   const [task, setTask] = useState<Task>("kis");
   const [qaAnswer, setQaAnswer] = useState("");
@@ -89,7 +96,12 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     targetUrl: "",
   });
 
-  const { hits, totalMs, loading, error } = useSearch(submitted);
+  const { hits, totalMs, strategy, loading, error } = useSearch(
+    submitted,
+    10,
+    useLlm,
+    exactMode,
+  );
 
   const results = useMemo(
     () =>
@@ -110,6 +122,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       setFlag(saved.flagValue ?? "");
       setService(saved.serviceValue ?? "image");
       setChosenTopics(saved.selectedTopics ?? []);
+      setUseLlm(saved.useLlm ?? true);
+      setExactMode(saved.exactMode ?? false);
     } catch {}
   }, []);
 
@@ -121,9 +135,11 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         flagValue: flag,
         serviceValue: service,
         selectedTopics: chosenTopics,
+        useLlm,
+        exactMode,
       }),
     );
-  }, [query, flag, service, chosenTopics]);
+  }, [query, flag, service, chosenTopics, useLlm, exactMode]);
 
   useEffect(() => {
     const handleClick = () =>
@@ -152,6 +168,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     setFlag("");
     setService("image");
     setChosenTopics([]);
+    setUseLlm(true);
+    setExactMode(false);
     setSubmitted("");
     setSelected([]);
     setOutput("");
@@ -403,6 +421,66 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         </button>
                       </div>
                     </form>
+                    <div className="form-check form-switch mb-3">
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        role="switch"
+                        id="useLlmSwitch"
+                        checked={useLlm}
+                        onChange={(e) => setUseLlm(e.target.checked)}
+                      />
+                      <label
+                        className="form-check-label small"
+                        htmlFor="useLlmSwitch"
+                      >
+                        {useLlm
+                          ? "Lọc theo LLM (tag) — bật"
+                          : "Search toàn bộ, không lọc — tắt LLM"}
+                      </label>
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label small fw-semibold d-block">
+                        Chế độ search:
+                      </label>
+                      <div className="btn-group btn-group-sm" role="group">
+                        <input
+                          type="radio"
+                          className="btn-check"
+                          name="searchMode"
+                          id="modeRerank"
+                          checked={!exactMode}
+                          onChange={() => setExactMode(false)}
+                        />
+                        <label
+                          className="btn btn-outline-secondary"
+                          htmlFor="modeRerank"
+                          title="HNSW+SQ8 coarse -> rerank exact trên top rerank_candidates"
+                        >
+                          rerank
+                        </label>
+                        <input
+                          type="radio"
+                          className="btn-check"
+                          name="searchMode"
+                          id="modeExact"
+                          checked={exactMode}
+                          onChange={() => setExactMode(true)}
+                        />
+                        <label
+                          className="btn btn-outline-secondary"
+                          htmlFor="modeExact"
+                          title="Brute-force toàn candidate/corpus, bỏ qua HNSW -- chậm hơn, không xấp xỉ"
+                        >
+                          exact
+                        </label>
+                      </div>
+                      {strategy && (
+                        <small className="text-muted ms-2">
+                          strategy thật: {strategy}
+                        </small>
+                      )}
+                    </div>
                     <div className="mb-3">
                       <label className="form-label small fw-semibold">
                         Topics:

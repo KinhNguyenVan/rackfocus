@@ -5,6 +5,10 @@ export type SearchRequest = {
 	use_llm?: boolean;
 	tags?: number[];
 	min_score?: number;
+	// false (mặc định) = "rerank": core tự chọn (HNSW+SQ8 coarse rồi rerank exact trên
+	// top rerank_candidates, hoặc EXACT_SUBSET nếu tag đủ hẹp). true = "exact": ép
+	// brute-force toàn candidate/corpus, bỏ qua HNSW hoàn toàn.
+	exact?: boolean;
 };
 
 export type SearchHit = {

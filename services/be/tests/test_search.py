@@ -76,6 +76,17 @@ def test_use_llm_false_skips_llm_and_searches_everything(client, llm):
     assert d["candidate_count"] == N
 
 
+def test_exact_forces_brute_force_over_whole_corpus_without_tags(client, llm):
+    """UI 'exact': không tag + exact=True -> ép EXACT_SUBSET (brute-force toàn corpus,
+    bỏ qua HNSW). Mặc định (exact=False) không tag luôn ra "pre" (2-tier) --
+    choose_strategy short-circuit candidate>=universe. exact=True phải lật nó sang
+    exact_subset mà KHÔNG lỗi (trước đây cand=None + EXACT_SUBSET crash ở core)."""
+    llm.reply = {"tags": [], "enriched": ""}
+    d = search(client, use_llm=False, exact=True)
+    assert d["strategy"] == "exact_subset"
+    assert d["candidate_count"] == N
+
+
 def test_explicit_tags_bypass_llm(client, llm):
     d = search(client, tags=[2, 4])
     assert llm.calls == 0

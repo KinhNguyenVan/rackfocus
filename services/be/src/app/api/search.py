@@ -38,6 +38,11 @@ class SearchRequest(BaseModel):
     # Chỉ định tag thẳng, bỏ qua LLM (dùng để debug hoặc khi user tự chọn).
     tags: list[int] | None = None
     min_score: float | None = None
+    # False (mặc định) = "rerank": core tự chọn — có tag hẹp thì EXACT_SUBSET trên
+    # subset, không thì HNSW+SQ8 coarse rồi rerank exact trên top rerank_candidates.
+    # True = "exact": ép brute-force TOÀN candidate (hoặc toàn corpus nếu không tag),
+    # bỏ qua HNSW hoàn toàn — chậm hơn nhưng không xấp xỉ.
+    exact: bool = False
 
 
 class Hit(BaseModel):
@@ -110,7 +115,7 @@ async def search(req: SearchRequest) -> SearchResponse:
     try:
         resp = await searchcore.search(
             vector, top_k=top_k, tags=tags, request_id=rid,
-            min_score=req.min_score,
+            min_score=req.min_score, exact=req.exact,
             max_per_video=st.diversity_max_per_video,
             min_time_gap_sec=st.diversity_min_time_gap_sec,
             dedup_threshold=st.diversity_dedup_threshold,
