@@ -1,46 +1,40 @@
-"""Tạo FastAPI app, mount router, lifespan: mở gRPC channel + pool Postgres/Redis."""
+"""Tạo FastAPI app, mount router, lifespan: mở gRPC channel + nạp trước tag vocab."""
+from __future__ import annotations
+
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from pydantic import BaseModel
 
+from .api.router import api_router, root_router
 from .clients import searchcore
+from .config import get_settings
+from .services import tagvocab
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("app")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await searchcore.get_stub()
+    st = get_settings()
+    await searchcore.connect(st.searchcore_target)
+
+    # Nạp trước vocab để query đầu tiên không phải trả thêm một round-trip.
+    # Core có thể còn đang nạp snapshot (vài phút) -> lỗi ở đây là bình thường,
+    # tagvocab.get() sẽ thử lại ở request sau.
+    try:
+        vocab, ver = await tagvocab.get(st)
+        log.info("khởi động: %d tag từ snapshot %s", len(vocab), ver or "?")
+    except Exception as ex:  # noqa: BLE001
+        log.warning("chưa nạp được tag vocab lúc khởi động (%s) — sẽ thử lại khi có "
+                    "request. Core có thể đang tải snapshot.", type(ex).__name__)
+
     yield
     await searchcore.close()
 
 
 app = FastAPI(title="rackfocus BE", lifespan=lifespan)
-
-
-class SearchReq(BaseModel):
-    text: str
-    top_k: int = 10
-
-
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True}
-
-
-@app.get("/readyz")
-async def readyz():
-    h = await searchcore.health()
-    return {"ready": h.ready, "snapshot": h.snapshot_ver, "dim": h.dim}
-
-
-@app.post("/api/search")
-async def search(req: SearchReq):
-    r = await searchcore.search(req.text, req.top_k)
-    return {
-        "hits": [
-            {"scene_id": h.scene_id, "score": h.score_exact, "rank": h.rank}
-            for h in r.hits
-        ],
-        "timings": {"total_ms": r.timings.total_ms},
-        "snapshot": r.snapshot_ver,
-    }
+app.include_router(root_router)
+app.include_router(api_router)

@@ -9,4 +9,5 @@ redis
 msgpack
 boto3
 httpx
+litellm
 pydantic-settings
