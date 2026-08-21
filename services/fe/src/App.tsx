@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { neighbors as fetchNeighbors } from "./api/client";
 import type { NeighborFrame, SearchHit } from "./api/types";
+import { VideoPlayer } from "./components/VideoPlayer";
 import { useSearch } from "./hooks/useSearch";
 import "./styles/global.css";
 
@@ -103,21 +104,29 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [neighborVideo, setNeighborVideo] = useState("");
   const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [neighborsError, setNeighborsError] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState({
+  const [playback, setPlayback] = useState<Result | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    target: Result | null;
+  }>({
     visible: false,
     x: 0,
     y: 0,
-    targetUrl: "",
-    targetVideo: "",
+    target: null,
   });
 
-  const loadNeighbors = (url: string, video: string) => {
+  const loadNeighbors = (result: Result) => {
     setFramesOpen(true);
-    setNeighborVideo(video);
+    setNeighborVideo(result.video);
     setNeighborsLoading(true);
     setNeighborsError(null);
-    fetchNeighbors(url, 25, 25)
-      .then((data) => setNeighborFrames(data.frames ?? []))
+    fetchNeighbors(result.keyframe_url, 25, 25)
+      .then((data) => {
+        setNeighborVideo(data.video_name);
+        setNeighborFrames(data.frames ?? []);
+      })
       .catch((cause: unknown) => {
         setNeighborFrames([]);
         setNeighborsError(cause instanceof Error ? cause.message : "Load frames failed");
@@ -125,11 +134,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       .finally(() => setNeighborsLoading(false));
   };
 
-  // Frame lân cận chỉ có url+frame (list S3, không đi qua snapshot) -- không có
-  // point_id/keyframe_time thật. Dựng Result "đủ dùng" để chọn được như ảnh kết quả
-  // chính: point_id băm từ video+frame (chỉ cần ổn định trong phiên, không cần khớp
-  // point_id thật của core), keyframe_time xấp xỉ frame/30fps vì map notebook cũng
-  // suy timestamp theo cùng tỉ lệ đó.
+  // Frame lân cận không đi qua vector index nên không có point_id thật. Timeline và
+  // scene metadata vẫn là dữ liệu thật, được BE nối từ scenes.json trên S3.
   const neighborToResult = (video: string, nf: NeighborFrame): Result => ({
     point_id: hashString(`${video}:${nf.frame}`),
     row: -1,
@@ -137,12 +143,12 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     rank: -1,
     video_name: video,
     frame: nf.frame,
-    keyframe_time: nf.frame / 30,
-    start_sec: 0,
-    end_sec: 0,
+    keyframe_time: nf.keyframe_time,
+    start_sec: nf.start_sec,
+    end_sec: nf.end_sec,
     keyframe_url: nf.url,
-    clip_url: "",
-    scene_idx: -1,
+    clip_url: nf.clip_url,
+    scene_idx: nf.scene_idx,
     has_speech: false,
     url: nf.url,
     video,
@@ -197,10 +203,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
 
   useEffect(() => {
     const handleClick = () =>
-      setContextMenu({ ...contextMenu, visible: false });
+      setContextMenu((current) => ({ ...current, visible: false }));
     document.addEventListener("click", handleClick);
     return () => document.removeEventListener("click", handleClick);
-  }, [contextMenu]);
+  }, []);
 
   const toggle = (result: Result) => {
     setSelected((items) =>
@@ -318,9 +324,9 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     goSubmission();
   };
 
-  const handleContextMenu = (e: React.MouseEvent, url: string, video: string) => {
+  const handleContextMenu = (e: React.MouseEvent, result: Result) => {
     e.preventDefault();
-    setContextMenu({ visible: true, x: e.pageX, y: e.pageY, targetUrl: url, targetVideo: video });
+    setContextMenu({ visible: true, x: e.pageX, y: e.pageY, target: result });
   };
 
   return (
@@ -360,8 +366,8 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         </div>
       </div>
 
-      {/* Context Menu Mock */}
-      {contextMenu.visible && (
+      {/* Context menu của một hit thật; giữ cả Result để mọi action dùng cùng metadata. */}
+      {contextMenu.visible && contextMenu.target && (
         <div
           id="contextMenu"
           className="position-absolute bg-white border rounded shadow-sm"
@@ -374,21 +380,22 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         >
           <button
             className="dropdown-item"
-            onClick={() => loadNeighbors(contextMenu.targetUrl, contextMenu.targetVideo)}
+            onClick={() => loadNeighbors(contextMenu.target!)}
           >
             📽️ Xem 25 frames trước/sau
           </button>
           <button
             className="dropdown-item"
-            onClick={() => navigator.clipboard.writeText(contextMenu.targetUrl)}
+            onClick={() => navigator.clipboard.writeText(contextMenu.target!.keyframe_url)}
           >
             🔗 Copy URL
           </button>
           <button
             className="dropdown-item"
-            onClick={() => alert("Mock: Mở video gốc (chưa nối map)")}
+            disabled={!contextMenu.target.clip_url}
+            onClick={() => setPlayback(contextMenu.target)}
           >
-            ▶️ Mở video gốc trong tab mới
+            ▶️ Mở video tại frame khớp
           </button>
         </div>
       )}
@@ -661,7 +668,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                               className="card-img-top main-img"
                               alt="scene"
                               onContextMenu={(e) =>
-                                handleContextMenu(e, result.url, result.video)
+                                handleContextMenu(e, result)
                               }
                             />
                             <div className="card-body p-2">
@@ -763,6 +770,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         src={nf.url}
                         className="img-fluid rounded"
                         alt="neighbor frame"
+                        onContextMenu={(event) => handleContextMenu(event, item)}
                       />
                       <div className="card-body p-1 text-center">
                         <input
@@ -771,7 +779,9 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                           checked={isSelected}
                           onChange={() => toggle(item)}
                         />
-                        <small>#{nf.frame}</small>
+                        <small className={nf.is_current ? "fw-bold text-primary" : ""}>
+                          #{nf.frame}{nf.is_current ? " · current" : ""}
+                        </small>
                       </div>
                     </div>
                   </div>
@@ -781,6 +791,14 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
           </div>
         )}
       </div>
+      {playback && (
+        <VideoPlayer
+          src={playback.clip_url}
+          seekSeconds={Math.max(0, playback.keyframe_time - playback.start_sec)}
+          title={`${playback.video} · frame ${playback.frame}`}
+          onClose={() => setPlayback(null)}
+        />
+      )}
     </div>
   );
 }

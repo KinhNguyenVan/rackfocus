@@ -49,8 +49,17 @@ export type SearchResponse = {
 export type NeighborFrame = {
 	url: string;
 	frame: number;
+	keyframe_time: number;
+	scene_idx: number;
+	start_sec: number;
+	end_sec: number;
+	clip_url: string;
+	is_current: boolean;
 };
 
 export type NeighborsResponse = {
+	video_name: string;
+	current_frame: number;
 	frames: NeighborFrame[];
+	playback_source: "scene_clip";
 };
