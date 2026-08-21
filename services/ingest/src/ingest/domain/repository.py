@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TypeAlias, cast
 
@@ -333,6 +334,39 @@ class DomainRepository:
             {"$limit": limit},
         ]
         return list(self.db.scene_domain_map.aggregate(pipeline))
+
+    def active_domain_by_scene(
+        self, video_ids: Sequence[str]
+    ) -> dict[str, dict[int, str]]:
+        """`{external_video_id: {scene_id: domain_id}}` cho analysis ĐANG ACTIVE.
+
+        Dùng để gán tag=domain_id cho keyframe theo `payload.scene_idx` khi build
+        `tags.npy` (xem `build_tags.py`) — cùng cơ chế lọc active với
+        `_find_active_mappings`/`find_scene_by_frame`, chỉ khác là bulk theo nhiều
+        video một lần thay vì single-frame lookup.
+        """
+        if not video_ids:
+            return {}
+        pipeline: list[MongoDocument] = [
+            {"$match": {"external_video_id": {"$in": list(video_ids)}}},
+            {
+                "$lookup": {
+                    "from": "domain_jobs",
+                    "localField": "source_id",
+                    "foreignField": "_id",
+                    "as": "job",
+                }
+            },
+            {"$unwind": "$job"},
+            {"$match": {"$expr": {"$eq": ["$analysis_id", "$job.active.analysis_id"]}}},
+            {"$project": {"external_video_id": 1, "scene_id": 1, "domain_id": 1}},
+        ]
+        result: dict[str, dict[int, str]] = defaultdict(dict)
+        for doc in self.db.scene_domain_map.aggregate(pipeline):
+            result[cast(str, doc["external_video_id"])][cast(int, doc["scene_id"])] = (
+                cast(str, doc["domain_id"])
+            )
+        return result
 
     def find_scenes_by_topic(
         self, topic_id: str, limit: int = 50

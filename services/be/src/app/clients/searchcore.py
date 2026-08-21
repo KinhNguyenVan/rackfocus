@@ -7,6 +7,7 @@ nên không còn chạy được: `Search` giờ nhận `repeated QueryPart`, v�
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import grpc
 
@@ -51,10 +52,30 @@ async def health(timeout: float = 2.0):
     return await _admin.Health(apb.HealthRequest(), timeout=timeout)
 
 
-async def tag_vocab(timeout: float = 5.0) -> tuple[dict[int, str], str]:
-    """({tag_id: description}, snapshot_ver). Rỗng nếu core chưa có tag."""
+@dataclass(frozen=True, slots=True)
+class TagInfo:
+    """Bản sao thuần Python của `TagInfo` proto — để `services/` không phải import pb."""
+
+    id: int
+    name: str
+    description: str
+    point_count: int
+
+
+async def tag_vocab(timeout: float = 5.0) -> tuple[dict[int, TagInfo], str]:
+    """({tag_id: TagInfo}, snapshot_ver). Rỗng nếu core chưa có tag.
+
+    Tag hiện tại = `domain_id` (13 giá trị cố định của `Domain` enum bên ingest, xem
+    `ingest/build_tags.py`): `name` là slug (`"sports"`), `description` là nhãn tiếng Việt
+    (`"Thể thao"`). Giữ cả hai qua RPC vì LLM enrich (`services/enrich.py`) dùng cả hai để
+    chọn tag chính xác hơn — trước đây chỗ này chỉ giữ `description`, bỏ mất `name` và
+    `point_count` mà core đã tính sẵn.
+    """
     resp = await _admin.GetTagVocab(apb.GetTagVocabRequest(ctx=_ctx()), timeout=timeout)
-    return {t.id: t.description for t in resp.tags}, resp.snapshot_ver
+    return (
+        {t.id: TagInfo(t.id, t.name, t.description, t.point_count) for t in resp.tags},
+        resp.snapshot_ver,
+    )
 
 
 async def encode(text: str, *, request_id: str = "", timeout: float = 3.0) -> list[float]:

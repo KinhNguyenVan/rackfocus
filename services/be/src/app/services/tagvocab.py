@@ -4,8 +4,9 @@ Vocab nằm trong snapshot của core nên tag id CHỈ có nghĩa trong đúng 
 không pin theo version thì sau khi core swap snapshot, BE sẽ đưa mô tả của bản cũ cho LLM
 và gửi lại tag id đã đổi nghĩa — sai âm thầm, không có lỗi nào báo.
 
-Vocab ~500 tag là 15-25k prompt token mỗi query, nên fetch lại mỗi request là vừa chậm vừa
-tốn; cache là bắt buộc, nhưng phải kiểm version.
+Tag = `domain_id`, chỉ 13 giá trị cố định (xem `ingest/build_tags.py`) nên chi phí prompt
+thực tế chỉ vài trăm token/query — không còn ở mức 15-25k như giả định ban đầu cho vocab
+~500 tag. Vẫn cache + pin version vì đây là round-trip gRPC mỗi request nếu không cache.
 """
 from __future__ import annotations
 
@@ -13,17 +14,18 @@ import asyncio
 import logging
 
 from ..clients import searchcore
+from ..clients.searchcore import TagInfo
 
 log = logging.getLogger("app.tagvocab")
 
 _lock = asyncio.Lock()
-_vocab: dict[int, str] = {}
+_vocab: dict[int, TagInfo] = {}
 _version: str = ""
 _checked_ver: str = ""
 
 
-async def get(settings, *, force: bool = False) -> tuple[dict[int, str], str]:
-    """({tag_id: description}, snapshot_ver). Core chưa có tag -> ({}, ver)."""
+async def get(settings, *, force: bool = False) -> tuple[dict[int, TagInfo], str]:
+    """({tag_id: TagInfo}, snapshot_ver). Core chưa có tag -> ({}, ver)."""
     global _vocab, _version, _checked_ver
 
     if not force and _version:

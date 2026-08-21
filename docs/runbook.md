@@ -96,13 +96,30 @@ chạy tuần tự từ trên xuống cho snapshot chỉ 3/30 group mà **mọi*
 
 Chưa có thì core vẫn chạy, chỉ là mọi query search toàn bộ corpus (`tags_used=[]`).
 
-- `tag_vocab.json`: `{"0": "mô tả tag 0", "1": "..."}` — dạng phẳng, nhồi thẳng vào prompt LLM.
-- `tags.npy`: `uint16[N]`, row-aligned, sentinel **65535** = chưa gán (**không phải 255**;
-  với vocab 100–500 thì 255 là tag hợp lệ).
-- **Sinh bằng join qua `idmap.npy` trên `point_id`, KHÔNG theo vị trí row.** Row order là
-  `sorted(glob(embed_*.parquet))` và không được ghi ở đâu; rebuild lệch một video là mọi
-  tag lệch mà `len(tags) == count` vẫn pass — sai âm thầm, không exception.
-- Nhớ thêm cả hai file vào `manifest.checksums`.
+Tag = `domain_id` (13 giá trị cố định của `Domain` enum trong
+`ingest/domain/models.py`, không phải `topic_id` — quyết định vì domain enrichment chỉ
+gán domain/topic theo **scene**, và tag phải phân hoạch corpus nên chọn tầng thô hơn,
+ổn định hơn). Sinh bằng:
+
+```bash
+python -m ingest.build_tags --snapshot-dir /path/to/snapshots/v1
+```
+
+(`services/ingest/src/ingest/build_tags.py`, cần `MONGO_URI`/`MONGO_DB` trong `.env` —
+đọc `domain_jobs`/`scene_domain_map` do `python -m ingest.domain` ghi ra.)
+
+- Join bằng `(payload.video_name, payload.scene_idx)` → `scene_domain_map` của
+  **analysis đang active** cho video đó (`DomainRepository.active_domain_by_scene`) — không
+  qua `idmap.npy`/`point_id`, vì `scene_idx` đã cùng không gian id với `scene_id` mà domain
+  enrichment dùng (`assign_scene_idx` ở notebook embed), không cần nội suy theo frame.
+- Row/video/scene không có analysis active nào → sentinel **65535** (không phải 255; vocab
+  chỉ 13 tag nhưng sentinel giữ nguyên theo hợp đồng của core).
+- In ra tỉ lệ phủ tag + phân bố theo domain — chạy xong đọc log này trước khi tin dữ liệu.
+- Tự thêm `tags.npy` + `tag_vocab.json` vào `manifest.checksums` (dùng `--no-manifest` nếu
+  muốn tự làm bước đó).
+- **Phải chạy `python -m ingest.domain` (phân đoạn domain) cho toàn bộ group xong trước** —
+  video nào chưa được domain enrichment chạm tới thì toàn bộ row của video đó thành sentinel,
+  tức là bị loại khỏi 100% query có tag.
 
 ### (4) Cấu hình `.env`
 

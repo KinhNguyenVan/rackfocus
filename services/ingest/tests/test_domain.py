@@ -531,6 +531,33 @@ def test_repository_reads_only_active_interval() -> None:
     assert repository.find_scene_by_frame("source", -1) is None
 
 
+def test_active_domain_by_scene_bulk_reads_active_analysis_only() -> None:
+    class Mappings:
+        def aggregate(self, pipeline):
+            assert pipeline[0]["$match"]["external_video_id"]["$in"] == [
+                "L21_V001",
+                "L21_V002",
+            ]
+            return [
+                {"external_video_id": "L21_V001", "scene_id": 0, "domain_id": "sports"},
+                {"external_video_id": "L21_V001", "scene_id": 1, "domain_id": "education"},
+                {"external_video_id": "L21_V002", "scene_id": 0, "domain_id": "health"},
+            ]
+
+    repository = object.__new__(DomainRepository)
+    repository.db = SimpleNamespace(scene_domain_map=Mappings())
+    assert repository.active_domain_by_scene(["L21_V001", "L21_V002"]) == {
+        "L21_V001": {0: "sports", 1: "education"},
+        "L21_V002": {0: "health"},
+    }
+
+
+def test_active_domain_by_scene_empty_input_skips_query() -> None:
+    repository = object.__new__(DomainRepository)
+    repository.db = SimpleNamespace(scene_domain_map=None)  # would blow up if touched
+    assert repository.active_domain_by_scene([]) == {}
+
+
 # --------------------------- chia việc theo group ---------------------------
 class FakeS3:
     """Bucket giả: chỉ cần CommonPrefixes + head_object cho discover_sources."""

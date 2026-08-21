@@ -21,18 +21,27 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from ..clients.searchcore import TagInfo
+
 log = logging.getLogger("app.enrich")
 
-_SYSTEM = """Bạn giúp chọn tag để thu hẹp phạm vi tìm kiếm trong kho video.
+# Tag hiện tại = domain_id, tức LĨNH VỰC/CHỦ ĐỀ tin tức của cảnh (13 giá trị cố định,
+# xem ingest/build_tags.py) — không phải mô tả cảnh tự do như bản nháp ban đầu. Nói rõ
+# "lĩnh vực" thay vì "tag" trong prompt để LLM dùng kiến thức phân loại tin tức có sẵn,
+# thay vì đoán một tập tag ngữ nghĩa mở nó không biết trước.
+_SYSTEM = """Bạn giúp chọn LĨNH VỰC/CHỦ ĐỀ tin tức để thu hẹp phạm vi tìm kiếm trong kho
+video. Mỗi khung hình trong kho đã được gán sẵn đúng một lĩnh vực (ví dụ "Thể thao",
+"Giáo dục", "Kinh tế - Tài chính").
 
-Cho một câu truy vấn và danh sách tag (id: mô tả), hãy chọn các tag mà cảnh cần tìm CÓ THỂ
-thuộc vào.
+Cho một câu truy vấn và danh sách lĩnh vực (id: mô tả tiếng Việt (tên)), hãy chọn (các)
+lĩnh vực mà cảnh cần tìm CÓ THỂ thuộc vào.
 
 Quy tắc:
-- Mỗi khung hình chỉ mang ĐÚNG MỘT tag. Chọn thiếu tag đúng thì cảnh cần tìm sẽ không bao
-  giờ xuất hiện trong kết quả, nên khi không chắc hãy chọn RỘNG hơn.
-- Chọn tối đa {max_tags} tag.
-- Không chắc chắn thì trả danh sách rỗng — hệ thống sẽ tìm toàn bộ kho.
+- Chọn thiếu lĩnh vực đúng thì cảnh cần tìm sẽ không bao giờ xuất hiện trong kết quả, nên
+  khi không chắc hãy chọn RỘNG hơn (nhiều lĩnh vực liên quan) thay vì chọn hẹp.
+- Chọn tối đa {max_tags} lĩnh vực.
+- Truy vấn không gắn với lĩnh vực rõ ràng (ví dụ chỉ tả màu sắc, hành động chung) thì trả
+  danh sách rỗng — hệ thống sẽ tìm toàn bộ kho.
 - Chỉ trả JSON, không giải thích:
   {{"tags": [<id>, ...], "enriched": "<câu truy vấn viết rõ hơn bằng tiếng Anh>"}}"""
 
@@ -78,20 +87,29 @@ def _parse(content: str, valid: set[int], max_tags: int) -> tuple[list[int], str
     return tags[:max_tags], str(data.get("enriched") or "")
 
 
-def build_prompt(query: str, vocab: dict[int, str], max_tags: int) -> list[dict]:
-    """vocab: {tag_id: description} — đúng định dạng file tag_vocab.json.
+def _listing_line(tag_id: int, info: TagInfo) -> str:
+    # name rỗng khi tag_vocab.json ở dạng phẳng {"id": "mô tả"} (snapshot.py chấp nhận cả
+    # hai dạng) — không in "()" rỗng trong trường hợp đó.
+    return f"{tag_id}: {info.description} ({info.name})" if info.name else \
+        f"{tag_id}: {info.description}"
 
-    Lưu ý chi phí: ~500 tag là 15-25k prompt token MỖI query. Nếu vocab lớn, cân nhắc
-    rút ngắn mô tả hoặc lọc trước bằng embedding thay vì đưa cả bộ vào prompt.
+
+def build_prompt(query: str, vocab: dict[int, TagInfo], max_tags: int) -> list[dict]:
+    """vocab: {tag_id: TagInfo(name, description, ...)} lấy qua `tagvocab.get()`.
+
+    Chỉ 13 lĩnh vực (domain_id) nên prompt vài trăm token, không phải 15-25k như giả định
+    ban đầu cho vocab ~500 tag tự do — xem ingest/build_tags.py.
     """
-    listing = "\n".join(f"{tid}: {desc}" for tid, desc in sorted(vocab.items()))
+    listing = "\n".join(
+        _listing_line(tid, info) for tid, info in sorted(vocab.items())
+    )
     return [
         {"role": "system", "content": _SYSTEM.format(max_tags=max_tags)},
-        {"role": "user", "content": f"Tag khả dụng:\n{listing}\n\nTruy vấn: {query}"},
+        {"role": "user", "content": f"Lĩnh vực khả dụng:\n{listing}\n\nTruy vấn: {query}"},
     ]
 
 
-async def enrich(query: str, vocab: dict[int, str], settings) -> Enrichment:
+async def enrich(query: str, vocab: dict[int, TagInfo], settings) -> Enrichment:
     """Không bao giờ raise. Lỗi -> Enrichment(tags=[], error=...) = search toàn bộ."""
     import time
 

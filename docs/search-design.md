@@ -96,6 +96,14 @@ Row order = `sorted(glob(embed_*.parquet))`, **không** ghi trong manifest (gi�
 Nên: sinh `tags.npy` bằng join `point_id` từ `idmap.npy`, và đưa `tags.npy` +
 `tag_vocab.json` vào `manifest.checksums`.
 
+**Đã implement** (`ingest/build_tags.py`, tag = `domain_id`): join thật dùng
+`(payload.video_name, payload.scene_idx)` → `scene_domain_map` của analysis active, **đọc
+trực tiếp từ `payload.parquet` của chính snapshot đang build tag cho nó** — không rebuild
+danh sách theo thứ tự riêng rồi ghép lại. Do đó không rơi vào bẫy "sai theo vị trí" ở trên:
+không có bước trung gian nào mà row order có thể lệch khỏi payload/idmap hiện tại, vì tag
+được tính ngay trên chính cột đã row-aligned đó. Vẫn tự thêm `tags.npy`+`tag_vocab.json` vào
+`manifest.checksums` như yêu cầu.
+
 ### Bất đẳng thức bắt buộc
 
 ```
@@ -250,6 +258,13 @@ Thiếu field làm 4 tính năng hợp đồng thành no-op hoặc trả sai:
 Đọc trực tiếp thư mục snapshot từ BE là phá service boundary và phá atomic swap.
 
 Lưu ý chi phí chưa tính: 500 mô tả tag ≈ **15–25k prompt token mỗi query**.
+
+**Đã chốt: tag = `domain_id`, tức chỉ 13 giá trị cố định** (`Domain` enum, không phải
+`topic_id` ~50 giá trị) — chi phí prompt thực tế chỉ còn vài trăm token/query, không phải
+15–25k. Đánh đổi: filter thô hơn hẳn (mỗi tag gộp nhiều chủ đề con), candidate/tag lớn hơn
+nhiều so với giả định "1,7k frame/tag" ở §4 (13 tag chia đều 500k thì ~38k frame/tag) —
+`EXACT_SUBSET_MAX` (mặc định 20 000, xem §4) sẽ bị vượt bởi hầu hết tag đơn, nên phần lớn
+query có tag vẫn đi nhánh HNSW hai tầng, không phải nhánh brute-force rẻ hơn.
 
 ---
 

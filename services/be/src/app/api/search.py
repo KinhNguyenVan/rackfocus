@@ -181,4 +181,6 @@ async def tags() -> dict:
     st = get_settings()
     vocab, ver = await tagvocab.get(st)
     return {"snapshot_ver": ver, "count": len(vocab),
-            "tags": [{"id": k, "description": v} for k, v in sorted(vocab.items())]}
+            "tags": [{"id": k, "name": v.name, "description": v.description,
+                      "point_count": v.point_count}
+                     for k, v in sorted(vocab.items())]}
