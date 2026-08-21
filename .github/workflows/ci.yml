@@ -7,15 +7,40 @@ jobs:
   lint-test:
     runs-on: ubuntu-latest
     strategy:
+      # Không huỷ các service khác khi một service hỏng — biết cả 3 cùng lúc thay vì
+      # sửa xong cái này mới lộ ra cái kia.
+      fail-fast: false
       matrix:
-        svc: [core, be, ingest]
+        include:
+          - svc: core
+            deps: faiss-cpu numpy pyarrow grpcio protobuf
+          - svc: be
+            deps: faiss-cpu numpy pyarrow grpcio protobuf fastapi 'httpx<0.29' pydantic-settings
+          - svc: ingest
+            # stages/__init__.py re-export media.py -> import cv2 ở module level
+            deps: numpy pandas pyarrow boto3 opencv-python-headless pillow
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
+
       - run: pip install ruff pytest
       - run: ruff check services/${{ matrix.svc }}/src
-      # - run: pytest services/${{ matrix.svc }}/tests -q
+
+      # Stub gRPC là artifact sinh ra lúc build (đã gitignore) — thiếu nó thì core/be
+      # không import được gì cả.
+      - name: Sinh stub gRPC
+        if: matrix.svc != 'ingest'
+        run: |
+          pip install grpcio-tools
+          bash scripts/gen_proto.sh
+
+      - name: Cài dependency cho test
+        run: pip install ${{ matrix.deps }}
+
+      # Snapshot là hợp đồng offline↔online thứ hai, ngang `.proto`. `.proto` có job
+      # `buf breaking` canh; snapshot chỉ có mấy test này canh, nên chúng phải chạy.
+      - run: pytest services/${{ matrix.svc }}/tests -q
 
   proto:
     runs-on: ubuntu-latest
