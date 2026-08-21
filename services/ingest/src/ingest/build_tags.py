@@ -1,24 +1,31 @@
-"""Gán tag=domain_id cho snapshot đã build: đọc payload.parquet + MongoDB
-(domain enrichment), ghi tags.npy + tag_vocab.json vào snapshot_dir, rồi đẩy lại lên
-SNAPSHOT_S3 để core thấy ngay khi tải snapshot lần đầu.
+"""Gán tag=domain_id cho snapshot đã build: đọc payload.parquet + map keyframe->scene đã
+validate + MongoDB (domain enrichment), ghi tags.npy + tag_vocab.json vào snapshot_dir,
+rồi đẩy lại lên SNAPSHOT_S3 để core thấy ngay khi tải snapshot lần đầu.
 
-Chạy SAU khi `aic-embed-siglip-2026.ipynb` đã ghi snapshot (payload.parquet,
-idmap.npy, manifest.json) — notebook Kaggle không có MongoDB nên không tự làm
-được bước này (xem docs/search-design.md §2, §4). Script này chỉ ĐỌC payload,
+Chạy SAU khi `aic-embed-siglip-2026.ipynb` đã ghi snapshot (payload.parquet, idmap.npy,
+manifest.json) và SAU khi `AIC_KeyframeSceneMap.ipynb` đã ghi
+`Maps_<group>/maps/keyframe_scene_map.json` cho các group liên quan. Script này chỉ ĐỌC,
 không đổi vector/idmap/faiss, nên giữ đúng row order đã có.
 
+Join qua `(video_name, frame)` -> `Maps_*/maps/keyframe_scene_map.json` để lấy `scene_id`,
+KHÔNG dùng thẳng cột `payload.scene_idx`: cột đó do `assign_scene_idx` trong notebook embed
+tính bằng một vòng lặp không có bước validate nào, còn `AIC_KeyframeSceneMap.ipynb` bisect +
+kiểm chéo theo cả frame lẫn timestamp, và assert `nearest == 0`/`unmatched == 0` trước khi
+ghi file — đáng tin hơn để làm nguồn cho tag.
+
 `core` không tự map domain->frame lúc chạy: nó chỉ ĐỌC `tags.npy` (đã map sẵn 1-1 theo
-row) lúc load snapshot, không query Mongo. Nên bước "domain -> scene -> frame" hai chặng
-(qua `DomainRepository.active_domain_by_scene`) phải chạy XONG, và kết quả phải NẰM TRÊN
-S3 (`--upload-s3`), TRƯỚC khi core khởi động lần đầu với version snapshot đó.
+row) lúc load snapshot, không query Mongo. Nên chuỗi "domain -> scene -> frame" ba chặng
+(qua map keyframe->scene rồi `DomainRepository.active_domain_by_scene`) phải chạy XONG, và
+kết quả phải NẰM TRÊN S3 (`--upload-s3`), TRƯỚC khi core khởi động lần đầu với version đó.
 
     python -m ingest.build_tags --snapshot-dir /path/to/snapshots/v1 \\
-        --upload-s3 s3://bucket/snapshots/v1
+        --maps-dir /path/to/maps --upload-s3 s3://bucket/snapshots/v1
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
@@ -57,21 +64,64 @@ def _sha256(path: str, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def load_frame_to_scene(
+    maps_dir: str, groups: list[str] | None = None
+) -> dict[tuple[str, int], int]:
+    """`{(video_id, frame): scene_id}` từ `Maps_<group>/maps/keyframe_scene_map.json`
+    (do `AIC_KeyframeSceneMap.ipynb` sinh — operator tự tải/sync các thư mục `Maps_*`
+    xuống `maps_dir` từ S3 trước khi chạy script này, giống cách `--snapshot-dir` cũng
+    là một bản đã tải sẵn cục bộ).
+
+    Bỏ qua keyframe có `scene_id: null` (video đó không có scene nào khớp — notebook map
+    đã tự assert `unmatched == 0` trước khi ghi file, nên trường hợp còn lại chỉ là video
+    chưa được notebook map đó xử lý tới, không phải lỗi).
+    """
+    pattern = os.path.join(maps_dir, "Maps_*", "maps", "keyframe_scene_map.json")
+    paths = sorted(glob.glob(pattern))
+    if groups:
+        wanted = set(groups)
+        paths = [
+            p for p in paths
+            if os.path.basename(os.path.dirname(os.path.dirname(p)))[len("Maps_"):]
+            in wanted
+        ]
+    if not paths:
+        raise RuntimeError(
+            f"Không thấy Maps_*/maps/keyframe_scene_map.json nào dưới {maps_dir} "
+            f"(groups={groups or 'tất cả'}) — chạy AIC_KeyframeSceneMap.ipynb trước."
+        )
+
+    out: dict[tuple[str, int], int] = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        for video_id, vmap in doc["videos"].items():
+            for kf in vmap["keyframes"]:
+                if kf["scene_id"] is not None:
+                    out[(video_id, int(kf["frame"]))] = int(kf["scene_id"])
+    return out
+
+
 def compute_tags(
-    video_names: list[str], scene_idx: list[int], repository: DomainRepository
+    video_names: list[str],
+    frames: list[int],
+    frame_to_scene: dict[tuple[str, int], int],
+    repository: DomainRepository,
 ) -> np.ndarray:
     """uint16[N] tag_id theo domain_id đang active của scene chứa keyframe đó.
 
-    `scene_idx` ở payload chính là `scene_id` trong scenes.json (xem
-    `assign_scene_idx` trong notebook embed) — cùng không gian id mà domain
-    enrichment dùng để lưu `scene_domain_map`, nên join trực tiếp bằng
-    (video_name, scene_idx), không cần nội suy theo start_frame/end_frame.
+    Ba chặng mỗi row: (video_name, frame) -> `frame_to_scene` (map đã validate, xem
+    `load_frame_to_scene`) -> scene_id -> `repository.active_domain_by_scene` -> domain_id
+    -> tag_id. Keyframe không có trong map (video chưa map, hoặc map trả None) -> sentinel.
     """
     unique_videos = sorted(set(video_names))
     domain_by_scene = repository.active_domain_by_scene(unique_videos)
 
     tags = np.full(len(video_names), TAGS_SENTINEL, dtype=np.uint16)
-    for row, (video_name, scene_id) in enumerate(zip(video_names, scene_idx, strict=True)):
+    for row, (video_name, frame) in enumerate(zip(video_names, frames, strict=True)):
+        scene_id = frame_to_scene.get((video_name, frame))
+        if scene_id is None:
+            continue
         domain_id = domain_by_scene.get(video_name, {}).get(scene_id)
         if domain_id is None:
             continue
@@ -136,6 +186,15 @@ def main() -> int:
     )
     _ = parser.add_argument("--snapshot-dir", required=True)
     _ = parser.add_argument(
+        "--maps-dir", required=True,
+        help="Thư mục cục bộ chứa Maps_<group>/maps/keyframe_scene_map.json "
+        "(do AIC_KeyframeSceneMap.ipynb sinh, đã tải/sync về từ S3).",
+    )
+    _ = parser.add_argument(
+        "--groups", nargs="+", default=None,
+        help="Chỉ đọc map của các group này (mặc định: mọi Maps_* tìm thấy dưới --maps-dir).",
+    )
+    _ = parser.add_argument(
         "--no-manifest",
         action="store_true",
         help="Không cập nhật manifest.checksums (chỉ ghi hai file, tự cập nhật thủ công sau).",
@@ -150,14 +209,17 @@ def main() -> int:
     args = parser.parse_args()
 
     payload_path = os.path.join(args.snapshot_dir, PAYLOAD_FILE)
-    table = pq.read_table(payload_path, columns=["video_name", "scene_idx"])
+    table = pq.read_table(payload_path, columns=["video_name", "frame"])
     video_names = table.column("video_name").to_pylist()
-    scene_idx = table.column("scene_idx").to_pylist()
+    frames = table.column("frame").to_pylist()
     print(f"{len(video_names)} row, {len(set(video_names))} video")
+
+    frame_to_scene = load_frame_to_scene(args.maps_dir, args.groups)
+    print(f"{len(frame_to_scene)} keyframe trong map đã validate ({args.maps_dir})")
 
     repository = DomainRepository()
     try:
-        tags = compute_tags(video_names, scene_idx, repository)
+        tags = compute_tags(video_names, frames, frame_to_scene, repository)
     finally:
         repository.close()
 

@@ -96,13 +96,25 @@ Row order = `sorted(glob(embed_*.parquet))`, **không** ghi trong manifest (gi�
 Nên: sinh `tags.npy` bằng join `point_id` từ `idmap.npy`, và đưa `tags.npy` +
 `tag_vocab.json` vào `manifest.checksums`.
 
-**Đã implement** (`ingest/build_tags.py`, tag = `domain_id`): join thật dùng
-`(payload.video_name, payload.scene_idx)` → `scene_domain_map` của analysis active, **đọc
-trực tiếp từ `payload.parquet` của chính snapshot đang build tag cho nó** — không rebuild
-danh sách theo thứ tự riêng rồi ghép lại. Do đó không rơi vào bẫy "sai theo vị trí" ở trên:
-không có bước trung gian nào mà row order có thể lệch khỏi payload/idmap hiện tại, vì tag
-được tính ngay trên chính cột đã row-aligned đó. Vẫn tự thêm `tags.npy`+`tag_vocab.json` vào
-`manifest.checksums` như yêu cầu.
+**Đã implement** (`ingest/build_tags.py`, tag = `domain_id`), ba chặng:
+
+```
+(payload.video_name, payload.frame) --[Maps_*/maps/keyframe_scene_map.json]--> scene_id
+scene_id                            --[DomainRepository.active_domain_by_scene]--> domain_id
+domain_id                           --[Domain enum, thứ tự cố định]--> tag_id
+```
+
+Chặng 1 đọc **map đã validate** do `AIC_KeyframeSceneMap.ipynb` sinh (bisect theo
+`start_frame`, đối chiếu chéo timestamp, tự `assert nearest == 0`/`unmatched == 0` trước
+khi ghi file) — KHÔNG dùng thẳng cột `payload.scene_idx`, vì cột đó (`assign_scene_idx`
+trong notebook embed) là một vòng lặp không có bước kiểm nào: không phát hiện được
+keyframe rơi ngoài mọi scene hay lệch do fps lẻ.
+
+`video_name`/`frame` đọc **trực tiếp từ `payload.parquet` của chính snapshot đang build
+tag cho nó** ở chặng 1 — không rebuild danh sách theo thứ tự riêng rồi ghép lại. Do đó
+không rơi vào bẫy "sai theo vị trí" ở trên: không có bước trung gian nào mà row order có
+thể lệch khỏi payload/idmap hiện tại, vì tag được tính ngay trên chính cột đã row-aligned
+đó. Vẫn tự thêm `tags.npy`+`tag_vocab.json` vào `manifest.checksums` như yêu cầu.
 
 ### Bất đẳng thức bắt buộc
 

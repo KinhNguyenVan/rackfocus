@@ -19,6 +19,7 @@ from ingest.build_tags import (
     _upload_to_s3,
     build_tag_vocab,
     compute_tags,
+    load_frame_to_scene,
 )
 from ingest.domain.models import Domain
 
@@ -37,8 +38,9 @@ def test_compute_tags_maps_known_scene_to_its_domain_tag_id() -> None:
             assert sorted(video_ids) == ["L21_V001", "L21_V002"]
             return {"L21_V001": {0: "sports", 1: "education"}}
 
+    frame_to_scene = {("L21_V001", 12): 0, ("L21_V001", 45): 1, ("L21_V002", 3): 0}
     tags = compute_tags(
-        ["L21_V001", "L21_V001", "L21_V002"], [0, 1, 0], FakeRepository()
+        ["L21_V001", "L21_V001", "L21_V002"], [12, 45, 3], frame_to_scene, FakeRepository()
     )
     sports_id = next(i for i, d in enumerate(Domain) if d.id == "sports")
     education_id = next(i for i, d in enumerate(Domain) if d.id == "education")
@@ -46,16 +48,19 @@ def test_compute_tags_maps_known_scene_to_its_domain_tag_id() -> None:
     assert tags.tolist() == [sports_id, education_id, TAGS_SENTINEL]
 
 
-def test_compute_tags_sentinel_for_video_or_scene_not_in_active_analysis() -> None:
+def test_compute_tags_sentinel_when_frame_missing_from_map_or_scene_unassigned() -> None:
     class FakeRepository:
         def active_domain_by_scene(self, video_ids):
             return {"L21_V001": {0: "sports"}}  # thiếu scene 1, thiếu cả video khác
 
+    # frame=45 KHÔNG có trong frame_to_scene (video chưa được AIC_KeyframeSceneMap xử lý
+    # tới) -- khác với case "có scene nhưng domain enrichment chưa phủ".
+    frame_to_scene = {("L21_V001", 12): 0, ("L21_V999", 3): 0}
     tags = compute_tags(
-        ["L21_V001", "L21_V001", "L21_V999"], [0, 1, 0], FakeRepository()
+        ["L21_V001", "L21_V001", "L21_V999"], [12, 45, 3], frame_to_scene, FakeRepository()
     )
-    assert tags[1] == TAGS_SENTINEL  # scene chưa được domain enrichment phủ tới
-    assert tags[2] == TAGS_SENTINEL  # video chưa có active analysis nào
+    assert tags[1] == TAGS_SENTINEL  # frame không có trong map keyframe->scene
+    assert tags[2] == TAGS_SENTINEL  # có scene nhưng video chưa có active analysis nào
 
 
 def test_compute_tags_rejects_domain_id_outside_current_taxonomy() -> None:
@@ -64,7 +69,51 @@ def test_compute_tags_rejects_domain_id_outside_current_taxonomy() -> None:
             return {"L21_V001": {0: "domain_da_bi_xoa_khoi_enum"}}
 
     with pytest.raises(ValueError, match="không nằm trong Domain enum"):
-        compute_tags(["L21_V001"], [0], FakeRepository())
+        compute_tags(["L21_V001"], [12], {("L21_V001", 12): 0}, FakeRepository())
+
+
+def _write_map_doc(base_dir: str, group: str, videos: dict) -> None:
+    path = os.path.join(base_dir, f"Maps_{group}", "maps", "keyframe_scene_map.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"groups": [group], "videos": videos}, f)
+
+
+def test_load_frame_to_scene_reads_keyframe_scene_map_and_skips_unmatched(tmp_path) -> None:
+    _write_map_doc(str(tmp_path), "L21_a", {
+        "L21_V001": {"keyframes": [
+            {"frame": 12, "scene_id": 0},
+            {"frame": 45, "scene_id": 1},
+            {"frame": 99, "scene_id": None},  # notebook: video không scene nào khớp
+        ]},
+    })
+
+    frame_to_scene = load_frame_to_scene(str(tmp_path))
+
+    assert frame_to_scene == {("L21_V001", 12): 0, ("L21_V001", 45): 1}
+
+
+def test_load_frame_to_scene_merges_multiple_groups(tmp_path) -> None:
+    _write_map_doc(str(tmp_path), "L21_a", {"L21_V001": {"keyframes": [{"frame": 1, "scene_id": 0}]}})
+    _write_map_doc(str(tmp_path), "L22_a", {"L22_V001": {"keyframes": [{"frame": 2, "scene_id": 0}]}})
+
+    frame_to_scene = load_frame_to_scene(str(tmp_path))
+
+    assert frame_to_scene == {("L21_V001", 1): 0, ("L22_V001", 2): 0}
+
+
+def test_load_frame_to_scene_groups_filter_restricts_which_files_are_read(tmp_path) -> None:
+    _write_map_doc(str(tmp_path), "L21_a", {"L21_V001": {"keyframes": [{"frame": 1, "scene_id": 0}]}})
+    _write_map_doc(str(tmp_path), "L22_a", {"L22_V001": {"keyframes": [{"frame": 2, "scene_id": 0}]}})
+
+    frame_to_scene = load_frame_to_scene(str(tmp_path), groups=["L21_a"])
+
+    assert frame_to_scene == {("L21_V001", 1): 0}
+
+
+def test_load_frame_to_scene_raises_when_nothing_found(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="Không thấy"):
+        load_frame_to_scene(str(tmp_path))
 
 
 def test_manifest_checksums_updated_for_written_files_and_preserves_existing(

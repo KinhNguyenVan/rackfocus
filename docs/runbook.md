@@ -102,18 +102,28 @@ gán domain/topic theo **scene**, và tag phải phân hoạch corpus nên chọ
 ổn định hơn). Sinh bằng:
 
 ```bash
-python -m ingest.build_tags --snapshot-dir /path/to/snapshots/v1
+python -m ingest.build_tags --snapshot-dir /path/to/snapshots/v1 --maps-dir /path/to/maps
 ```
 
 (`services/ingest/src/ingest/build_tags.py`, cần `MONGO_URI`/`MONGO_DB` trong `.env` —
 đọc `domain_jobs`/`scene_domain_map` do `python -m ingest.domain` ghi ra.)
 
-- Join bằng `(payload.video_name, payload.scene_idx)` → `scene_domain_map` của
-  **analysis đang active** cho video đó (`DomainRepository.active_domain_by_scene`) — không
-  qua `idmap.npy`/`point_id`, vì `scene_idx` đã cùng không gian id với `scene_id` mà domain
-  enrichment dùng (`assign_scene_idx` ở notebook embed), không cần nội suy theo frame.
-- Row/video/scene không có analysis active nào → sentinel **65535** (không phải 255; vocab
-  chỉ 13 tag nhưng sentinel giữ nguyên theo hợp đồng của core).
+**Ba chặng, không phải hai.** `--maps-dir` trỏ tới thư mục cục bộ chứa
+`Maps_<group>/maps/keyframe_scene_map.json` do **`AIC_KeyframeSceneMap.ipynb`** sinh (chạy
+notebook đó, tải/sync `Maps_*` về máy, rồi mới chạy `build_tags.py`):
+
+1. `(payload.video_name, payload.frame)` → `keyframe_scene_map.json` → `scene_id`. Join
+   qua **map đã validate** này, KHÔNG dùng thẳng cột `payload.scene_idx` — cột đó do
+   `assign_scene_idx` trong notebook embed tính bằng một vòng lặp không có bước kiểm nào,
+   còn `AIC_KeyframeSceneMap.ipynb` bisect + đối chiếu cả frame lẫn timestamp và tự
+   `assert nearest == 0` / `unmatched == 0` trước khi ghi file.
+2. `scene_id` → `scene_domain_map` của **analysis đang active** cho video đó
+   (`DomainRepository.active_domain_by_scene`).
+3. `domain_id` → `tag_id` (thứ tự cố định của `Domain` enum).
+
+- Frame không có trong map (video chưa chạy `AIC_KeyframeSceneMap.ipynb`) hoặc video chưa
+  có analysis active nào → sentinel **65535** (không phải 255; vocab chỉ 13 tag nhưng
+  sentinel giữ nguyên theo hợp đồng của core).
 - In ra tỉ lệ phủ tag + phân bố theo domain — chạy xong đọc log này trước khi tin dữ liệu.
 - Tự thêm `tags.npy` + `tag_vocab.json` vào `manifest.checksums` (dùng `--no-manifest` nếu
   muốn tự làm bước đó).
