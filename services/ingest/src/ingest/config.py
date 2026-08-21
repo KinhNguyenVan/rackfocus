@@ -1,11 +1,11 @@
 """Validated environment configuration for ingest jobs."""
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, TypeAlias
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-type ReasoningLevel = Literal["low", "medium", "high"]
+ReasoningLevel: TypeAlias = Literal["low", "medium", "high"]
 
 
 class IngestConfig(BaseSettings):

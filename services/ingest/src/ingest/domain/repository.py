@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import cast
+from typing import TypeAlias, cast
 
 from pymongo import ASCENDING, DESCENDING, MongoClient, UpdateOne
 from pymongo.database import Database
@@ -20,7 +20,7 @@ from .models import (
     stable_hash,
 )
 
-type MongoDocument = dict[str, object]
+MongoDocument: TypeAlias = dict[str, object]
 
 
 class DomainRepository:

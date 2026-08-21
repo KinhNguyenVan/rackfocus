@@ -20,7 +20,10 @@ buộc tính lại thì chạy với `--force`.
 
 from __future__ import annotations
 
-from typing import cast, override
+from typing import cast
+
+# typing.override chỉ có từ 3.12; typing_extensions là dep sẵn của pydantic.
+from typing_extensions import override
 
 import litellm
 

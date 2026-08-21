@@ -10,17 +10,23 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Union
+
+# TypeAliasType: backport của PEP 695, đánh giá LAZY. Bắt buộc cho alias đệ quy —
+# `JsonValue: TypeAlias = Union[..., list["JsonValue"]]` sẽ làm pydantic resolve
+# ngay và nở ra vô tận (RecursionError).
+from typing_extensions import TypeAliasType
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 PROMPT_VERSION = "domain-segmentation-v5"
 TAXONOMY_VERSION = "vi-video-v3"
 
-type JsonValue = (
-    None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+JsonValue = TypeAliasType(
+    "JsonValue",
+    Union[None, bool, int, float, str, list["JsonValue"], dict[str, "JsonValue"]],
 )
-type JsonObject = dict[str, JsonValue]
+JsonObject = TypeAliasType("JsonObject", dict[str, JsonValue])
 
 
 class Domain(StrEnum):

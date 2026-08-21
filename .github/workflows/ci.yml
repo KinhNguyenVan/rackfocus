@@ -23,9 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        # 3.12: ingest.domain dùng PEP 695 (`type X = ...`), 3.11 sẽ SyntaxError.
-        # Khớp requires-python trong pyproject.toml.
-        with: { python-version: "3.12" }
+        # Một phiên bản duy nhất cho mọi thứ: CI, cả 3 Dockerfile, pyproject.
+        with: { python-version: "3.11" }
 
       - run: pip install pytest
 
