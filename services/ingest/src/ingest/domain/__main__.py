@@ -7,19 +7,18 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..config import config
-from .cerebras import CerebrasDomainEnricher
 from .enricher import DomainEnricher
-from .gemini import GeminiDomainEnricher
+from .llm import LiteLLMDomainEnricher
 from .repository import DomainRepository
 from .service import ProcessStatus, create_s3_client, discover_sources, process_source
 
 
 class CliArgs(argparse.Namespace):
     prefix: str = ""
+    groups: list[str] = []
     video: str = ""
     file_list: str = ""
     workers: int = 4
-    provider: str = config.domain_provider
     model: str = ""
     semantic_retries: int = 3
     force: bool = False
@@ -45,13 +44,24 @@ def parse_args() -> CliArgs:
         description="Tag temporal scene domains with an LLM and persist to MongoDB."
     )
     _ = parser.add_argument("--prefix", default="")
+    _ = parser.add_argument(
+        "--groups",
+        nargs="+",
+        default=[],
+        metavar="GROUP",
+        help="Nhiều group, nhận tên trần hoặc đầy đủ: --groups L26_b L26_c "
+        "(hoặc Keyscence_L26_b). Chia việc theo người thì mỗi người một danh sách "
+        "rời nhau.",
+    )
     _ = parser.add_argument("--video", default="")
     _ = parser.add_argument("--file-list", default="")
     _ = parser.add_argument("--workers", type=positive_int, default=4)
     _ = parser.add_argument(
-        "--provider", choices=("cerebras", "gemini"), default=config.domain_provider
+        "--model",
+        default="",
+        help=f'litellm "provider/model", mặc định {config.domain_llm_model!r}. '
+        "Ví dụ: cerebras/gpt-oss-120b, gemini/gemini-3.7-flash",
     )
-    _ = parser.add_argument("--model", default="")
     _ = parser.add_argument("--semantic-retries", type=non_negative_int, default=3)
     _ = parser.add_argument("--force", action="store_true")
     _ = parser.add_argument("--dry-run", action="store_true")
@@ -59,10 +69,7 @@ def parse_args() -> CliArgs:
 
 
 def create_enricher(args: CliArgs) -> DomainEnricher:
-    enricher_type = (
-        CerebrasDomainEnricher if args.provider == "cerebras" else GeminiDomainEnricher
-    )
-    return enricher_type(
+    return LiteLLMDomainEnricher(
         model=args.model or None, semantic_retries=args.semantic_retries
     )
 
@@ -74,9 +81,16 @@ def main() -> int:
         s3,
         config.aws_bucket_name,
         prefix=args.prefix,
+        groups=args.groups,
         video_id=args.video,
         file_list=args.file_list,
     )
+    scope = (
+        f"groups={args.groups}" if args.groups
+        else f"prefix={args.prefix!r}" if args.prefix
+        else "toàn bộ bucket"
+    )
+    print(f"model={config.domain_llm_model if not args.model else args.model} {scope}")
     print(f"found={len(sources)} scenes.json")
     if args.dry_run:
         for source in sources:

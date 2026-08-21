@@ -11,8 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from ingest.domain.cerebras import CerebrasDomainEnricher
-from ingest.domain.gemini import GeminiDomainEnricher
+from ingest.domain.llm import LiteLLMDomainEnricher, split_model
 from ingest.domain.models import (
     TOPICS_BY_DOMAIN,
     Domain,
@@ -24,6 +23,7 @@ from ingest.domain.models import (
     validate_segments,
 )
 from ingest.domain.repository import DomainRepository
+from ingest.domain.service import discover_sources, normalize_group
 
 
 def scenes(count: int) -> list[dict]:
@@ -255,16 +255,19 @@ def test_pydantic_schema_is_strict_without_custom_cleanup() -> None:
     assert set(TOPICS_BY_DOMAIN) == set(Domain)
 
 
-class FakeCompletions:
+class FakeCompletion:
+    """Giả `litellm.completion`. Trả đúng shape litellm: choices/usage/id/model."""
+
     def __init__(self, contents: list[str], finish_reason: str = "stop") -> None:
         self.contents = iter(contents)
         self.finish_reason = finish_reason
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):
+    def __call__(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(
             id="request-id",
+            model="test-model-version",
             system_fingerprint="test-fingerprint",
             choices=[
                 SimpleNamespace(
@@ -272,29 +275,13 @@ class FakeCompletions:
                     message=SimpleNamespace(content=next(self.contents)),
                 )
             ],
-            usage=SimpleNamespace(to_dict=lambda: {"total_tokens": 42}),
-        )
-
-
-class FakeGeminiModels:
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.calls: list[dict] = []
-
-    def generate_content(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(
-            text=self.content,
-            response_id="gemini-request-id",
-            model_version="gemini-test-version",
-            candidates=[SimpleNamespace(finish_reason=None)],
-            usage_metadata=SimpleNamespace(
-                model_dump=lambda **_kwargs: {"total_token_count": 42}
+            usage=SimpleNamespace(
+                model_dump=lambda **_kwargs: {"total_tokens": 42}
             ),
         )
 
 
-def test_cerebras_semantic_retry_repairs_a_gap() -> None:
+def test_semantic_retry_repairs_a_gap() -> None:
     invalid = {
         "segments": [
             segment(0, 0, "Thể thao", "A"),
@@ -307,43 +294,50 @@ def test_cerebras_semantic_retry_repairs_a_gap() -> None:
             segment(1, 2, "Giáo dục", "B"),
         ]
     }
-    completions = FakeCompletions([json.dumps(invalid), json.dumps(valid)])
-    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    enricher = CerebrasDomainEnricher(client=client, semantic_retries=1)
+    completion = FakeCompletion([json.dumps(invalid), json.dumps(valid)])
+    enricher = LiteLLMDomainEnricher(
+        model="cerebras/gpt-oss-120b", semantic_retries=1, completion=completion
+    )
 
     result = enricher.analyze("L21_V002", scenes(3))
 
-    assert len(completions.calls) == 2
+    assert len(completion.calls) == 2
     assert list(result.segments[1].scene_ids) == [1, 2]
     assert result.inference and result.inference.semantic_attempts == 2
-    assert completions.calls[0]["seed"] == 0
-    assert completions.calls[0]["reasoning_effort"] == "medium"
-    assert completions.calls[0]["reasoning_format"] == "hidden"
-    assert completions.calls[0]["max_completion_tokens"] == 32768
-    assert completions.calls[0]["response_format"]["type"] == "json_schema"
-    schema = json.dumps(completions.calls[0]["response_format"]["json_schema"])
+
+    call = completion.calls[0]
+    assert call["model"] == "cerebras/gpt-oss-120b"
+    assert call["seed"] == 0
+    assert call["temperature"] == 0
+    assert call["reasoning_effort"] == "medium"
+    assert call["reasoning_format"] == "hidden"
+    assert call["max_tokens"] == 32768
+    assert call["response_format"]["type"] == "json_schema"
+    # Cerebras strict mode từ chối các annotation này.
+    schema = json.dumps(call["response_format"]["json_schema"])
     assert "minItems" not in schema
     assert "maxItems" not in schema
     assert '"title"' not in schema
 
 
-def test_cerebras_rejects_truncated_output() -> None:
+def test_rejects_truncated_output() -> None:
     content = json.dumps({"segments": [segment(0, 0, "Thể thao", "Đua xe")]})
-    completions = FakeCompletions([content], finish_reason="length")
-    enricher = CerebrasDomainEnricher(
-        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
-        model="gpt-oss-120b",
+    enricher = LiteLLMDomainEnricher(
+        model="cerebras/gpt-oss-120b",
+        completion=FakeCompletion([content], finish_reason="length"),
     )
 
     with pytest.raises(RuntimeError, match="output bị cắt"):
         enricher.analyze("L21_V002", scenes(1))
 
 
-def test_gemini_uses_same_schema_and_normalized_output() -> None:
+def test_gemini_keeps_full_schema_and_maps_thinking() -> None:
+    """Chỉ Cerebras cần cắt schema; provider khác giữ nguyên để model được hướng dẫn
+    đầy đủ."""
     expected = {"segments": [segment(0, 2, "Thể thao", "Đua xe đạp")]}
-    models = FakeGeminiModels(json.dumps(expected))
-    enricher = GeminiDomainEnricher(
-        client=SimpleNamespace(models=models), model="gemini-3.7-flash"
+    completion = FakeCompletion([json.dumps(expected)])
+    enricher = LiteLLMDomainEnricher(
+        model="gemini/gemini-3.7-flash", completion=completion
     )
 
     result = enricher.analyze("L21_V002", scenes(3))
@@ -352,33 +346,77 @@ def test_gemini_uses_same_schema_and_normalized_output() -> None:
     assert result.segments[0].domain_id == "sports"
     assert result.segments[0].topic_id is Topic.OTHER
     assert result.inference
-    assert result.inference.request_id == "gemini-request-id"
-    assert result.inference.model_version == "gemini-test-version"
-    assert result.inference.usage == {"total_token_count": 42}
-    call = models.calls[0]
-    assert call["config"].response_json_schema == (
+    assert result.inference.request_id == "request-id"
+    assert result.inference.model_version == "test-model-version"
+    assert result.inference.usage == {"total_tokens": 42}
+
+    call = completion.calls[0]
+    assert call["response_format"]["json_schema"]["schema"] == (
         SegmentationResponse.model_json_schema()
     )
-    assert call["config"].response_mime_type == "application/json"
-    assert call["config"].automatic_function_calling.disable is True
-    assert call["config"].thinking_config.thinking_level == "MEDIUM"
-    assert call["config"].thinking_config.include_thoughts is False
-    assert call["config"].max_output_tokens == 32768
+    assert call["reasoning_effort"] == "medium"
+    assert "seed" not in call
 
 
 def test_provider_is_part_of_inference_fingerprint() -> None:
     content = json.dumps({"segments": [segment(0, 0, "Thể thao", "Đua xe")]})
-    cerebras = CerebrasDomainEnricher(
-        client=SimpleNamespace(
-            chat=SimpleNamespace(completions=FakeCompletions([content]))
-        ),
-        model="same-model",
+    cerebras = LiteLLMDomainEnricher(
+        model="cerebras/same-model", completion=FakeCompletion([content])
     )
-    gemini = GeminiDomainEnricher(
-        client=SimpleNamespace(models=FakeGeminiModels(content)), model="same-model"
+    gemini = LiteLLMDomainEnricher(
+        model="gemini/same-model", completion=FakeCompletion([content])
     )
 
+    assert cerebras.provider == "cerebras"
+    assert gemini.provider == "gemini"
     assert cerebras.inference_fingerprint != gemini.inference_fingerprint
+
+
+def test_fingerprint_keeps_bare_model_and_legacy_options() -> None:
+    """BẢO VỆ CACHE MONGO. `is_active` so `inference_fingerprint`, mà fingerprint gồm
+    `provider` + `model` + `inference_options`.
+
+    Nếu model thành "cerebras/gpt-oss-120b" thay vì "gpt-oss-120b", hoặc options khác
+    dict mà SDK cũ sinh ra, thì fingerprint đổi cho MỌI video đã tag -> chạy lại toàn
+    bộ qua LLM, tốn tiền theo số video. Test này khoá đúng hai thứ đó.
+    """
+    cerebras = LiteLLMDomainEnricher(
+        model="cerebras/gpt-oss-120b", completion=FakeCompletion([])
+    )
+    assert cerebras.provider == "cerebras"
+    assert cerebras.model == "gpt-oss-120b"
+    assert cerebras.inference_options == {
+        "seed": 0,
+        "temperature": 0,
+        "reasoning_effort": "medium",
+        "reasoning_format": "hidden",
+    }
+
+    gemini = LiteLLMDomainEnricher(
+        model="gemini/gemini-3.7-flash", completion=FakeCompletion([])
+    )
+    assert gemini.model == "gemini-3.7-flash"
+    assert gemini.inference_options == {
+        "thinking_level": "medium",
+        "include_thoughts": False,
+    }
+
+    # Bản cũ chỉ bật reasoning cho đúng gpt-oss-120b / gemini-3.x.
+    other = LiteLLMDomainEnricher(
+        model="cerebras/llama-3.3-70b", completion=FakeCompletion([])
+    )
+    assert other.inference_options == {"seed": 0, "temperature": 0}
+    old_gemini = LiteLLMDomainEnricher(
+        model="gemini/gemini-2.0-flash", completion=FakeCompletion([])
+    )
+    assert old_gemini.inference_options == {}
+
+
+def test_split_model_requires_provider_prefix() -> None:
+    assert split_model("cerebras/gpt-oss-120b") == ("cerebras", "gpt-oss-120b")
+    for bad in ("gpt-oss-120b", "/model", "provider/", ""):
+        with pytest.raises(ValueError, match="provider/model"):
+            _ = split_model(bad)
 
 
 def test_hash_analysis_id_and_taxonomy_are_stable() -> None:
@@ -491,3 +529,101 @@ def test_repository_reads_only_active_interval() -> None:
     repository.db = SimpleNamespace(domain_jobs=Jobs(), scene_domain_map=Mappings())
     assert repository.find_scene_by_frame("source", 150)["keywords"] == ["bmx"]
     assert repository.find_scene_by_frame("source", -1) is None
+
+
+# --------------------------- chia việc theo group ---------------------------
+class FakeS3:
+    """Bucket giả: chỉ cần CommonPrefixes + head_object cho discover_sources."""
+
+    def __init__(self, videos: dict[str, list[str]]) -> None:
+        self.videos = videos  # {"Keyscence_L26_b/": ["L26_V001", ...]}
+        self.heads: list[str] = []
+
+    def get_paginator(self, _name: str):
+        outer = self
+
+        class _P:
+            def paginate(self, *, Bucket: str, Prefix: str, Delimiter: str):
+                _ = Bucket, Delimiter
+                if not Prefix:
+                    return [{"CommonPrefixes": [{"Prefix": g} for g in outer.videos]}]
+                for group, names in outer.videos.items():
+                    if Prefix == f"{group}keyscence/":
+                        return [
+                            {
+                                "CommonPrefixes": [
+                                    {"Prefix": f"{Prefix}{n}/"} for n in names
+                                ]
+                            }
+                        ]
+                return [{}]
+
+        return _P()
+
+    def head_object(self, *, Bucket: str, Key: str):
+        _ = Bucket
+        self.heads.append(Key)
+        return {"ETag": '"abc"'}
+
+
+def _bucket() -> FakeS3:
+    return FakeS3(
+        {
+            "Keyscence_L26_b/": ["L26_V001", "L26_V002"],
+            "Keyscence_L26_c/": ["L26_V003"],
+            "Keyscence_L29_a/": ["L29_V001"],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("L26_b", "Keyscence_L26_b/"),
+        ("Keyscence_L26_b", "Keyscence_L26_b/"),
+        ("Keyscence_L26_b/", "Keyscence_L26_b/"),
+        ("  L26_b  ", "Keyscence_L26_b/"),
+    ],
+)
+def test_normalize_group_accepts_bare_and_full_names(value: str, expected: str) -> None:
+    """Notebook cắt frame gọi group là "L26_b"; CLI phải hiểu cùng tên đó."""
+    assert normalize_group(value) == expected
+
+
+def test_groups_selects_only_requested_groups() -> None:
+    s3 = _bucket()
+    sources = discover_sources(s3, "bucket", groups=["L26_b", "L26_c"])
+    assert [s.key for s in sources] == [
+        "Keyscence_L26_b/keyscence/L26_V001/scenes.json",
+        "Keyscence_L26_b/keyscence/L26_V002/scenes.json",
+        "Keyscence_L26_c/keyscence/L26_V003/scenes.json",
+    ]
+
+
+def test_groups_are_deduped() -> None:
+    s3 = _bucket()
+    sources = discover_sources(s3, "bucket", groups=["L26_b", "Keyscence_L26_b"])
+    assert len(sources) == 2
+
+
+def test_two_people_with_disjoint_groups_do_not_overlap() -> None:
+    """Chia việc theo người: hai danh sách rời nhau thì không ai đụng video của ai."""
+    s3 = _bucket()
+    a = {s.key for s in discover_sources(s3, "bucket", groups=["L26_b"])}
+    b = {s.key for s in discover_sources(s3, "bucket", groups=["L26_c", "L29_a"])}
+    assert a and b and not (a & b)
+
+
+def test_no_scope_walks_whole_bucket() -> None:
+    s3 = _bucket()
+    assert len(discover_sources(s3, "bucket")) == 4
+
+
+def test_groups_take_precedence_over_prefix() -> None:
+    s3 = _bucket()
+    sources = discover_sources(
+        s3, "bucket", prefix="Keyscence_L29_a", groups=["L26_c"]
+    )
+    assert [s.key for s in sources] == [
+        "Keyscence_L26_c/keyscence/L26_V003/scenes.json"
+    ]

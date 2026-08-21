@@ -27,20 +27,21 @@ class IngestConfig(BaseSettings):
     aws_region: str = "ap-southeast-1"
     aws_bucket_name: str = "aic-bucket-2026"
 
-    domain_provider: Literal["cerebras", "gemini"] = "cerebras"
-
-    cerebras_api_key: str = ""
-    cerebras_base_url: str = "https://api.cerebras.ai"
-    cerebras_model: str = "gpt-oss-120b"
-    cerebras_timeout_seconds: float = Field(default=60, gt=0)
-    cerebras_max_completion_tokens: int = Field(default=32768, gt=0)
-    cerebras_reasoning_effort: ReasoningLevel = "medium"
-
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.7-flash"
-    gemini_timeout_seconds: float = Field(default=60, gt=0)
-    gemini_max_output_tokens: int = Field(default=32768, gt=0)
-    gemini_thinking_level: ReasoningLevel = "medium"
+    # ── LLM cho domain enrichment (qua litellm) ──────────────────────
+    # Dạng "provider/model", cùng convention với services/be nên hai service khai báo
+    # model giống nhau và dùng chung .env.
+    #
+    # API key: KHÔNG khai ở đây theo từng provider nữa — litellm tự đọc biến chuẩn của
+    # provider (CEREBRAS_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY...).
+    # `domain_llm_api_key` chỉ để ghi đè khi cần.
+    domain_llm_model: str = "cerebras/gpt-oss-120b"
+    domain_llm_api_key: str = ""
+    domain_llm_api_base: str = ""
+    domain_llm_timeout_seconds: float = Field(default=60, gt=0)
+    domain_llm_max_tokens: int = Field(default=32768, gt=0)
+    # Cerebras gọi là reasoning_effort, Gemini gọi là thinking_level — cùng một nút vặn,
+    # litellm map sang tên của từng provider.
+    domain_reasoning_effort: ReasoningLevel = "medium"
 
 
 config = IngestConfig()

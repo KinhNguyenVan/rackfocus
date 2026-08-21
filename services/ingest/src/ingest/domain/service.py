@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
@@ -95,15 +96,35 @@ def _head_sources(
     return sorted(sources, key=lambda source: source.key)
 
 
+def normalize_group(value: str) -> str:
+    """`L26_b` hoặc `Keyscence_L26_b` hoặc `Keyscence_L26_b/` -> `Keyscence_L26_b/`.
+
+    Nhận cả tên group trần để khớp cách `aic-frame-cut-2026.ipynb` gọi tên (GROUPS =
+    ["L26_b", ...]) — chia việc theo người thì hai bên phải nói cùng một thứ tiếng.
+    """
+    group = value.strip().strip("/")
+    if not group:
+        raise ValueError("tên group rỗng")
+    if not group.startswith("Keyscence_"):
+        group = f"Keyscence_{group}"
+    return f"{group}/"
+
+
 def discover_sources(
     client: S3Client,
     bucket: str,
     *,
     prefix: str = "",
+    groups: Sequence[str] = (),
     video_id: str = "",
     file_list: str = "",
 ) -> list[SceneSource]:
-    """Discover scenes.json markers without listing scene media objects."""
+    """Discover scenes.json markers without listing scene media objects.
+
+    `groups` nhận nhiều group để một người chạy một lệnh cho cả phần việc của mình,
+    thay vì gọi lại lệnh cho từng group. Bỏ trống cả `prefix` lẫn `groups` = toàn bộ
+    bucket.
+    """
     if file_list:
         values = [
             line.strip()
@@ -139,18 +160,21 @@ def discover_sources(
                 else []
             )
 
-    groups = (
-        [f"{normalized_prefix.split('/')[0]}/"]
-        if normalized_prefix
-        else [
+    if groups:
+        # Giữ thứ tự người dùng gõ, bỏ trùng.
+        selected = list(dict.fromkeys(normalize_group(value) for value in groups))
+    elif normalized_prefix:
+        selected = [f"{normalized_prefix.split('/')[0]}/"]
+    else:
+        selected = [
             value
             for value in _common_prefixes(client, bucket, "")
             if value.startswith("Keyscence_")
         ]
-    )
+
     keys = [
         f"{video_prefix}scenes.json"
-        for group in groups
+        for group in selected
         for video_prefix in _common_prefixes(client, bucket, f"{group}keyscence/")
         if not video_id or video_prefix.rstrip("/").split("/")[-1] == video_id
     ]
