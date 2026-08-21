@@ -14,9 +14,12 @@ class Settings(BaseSettings):
 
     # Deadline gRPC. KHÔNG để 200ms như Handoff §4.2: encoder SigLIP so400m tốn
     # 53.3 GFLOP/query = 170-420ms trên 4 core, nên 200ms cho 100% DEADLINE_EXCEEDED.
-    # Ngân sách đã sửa thành 250-500ms tổng (docs/search-design.md §1).
-    encode_timeout_s: float = 3.0
-    search_timeout_s: float = 2.0
+    # Nới rộng hơn cả ngân sách 250-500ms ở docs/search-design.md §1: máy chạy thật ở
+    # đây chưa benchmark riêng (số liệu §1 đo trên máy khác), corpus giờ 613k điểm
+    # (nặng hơn 250k lúc đo), và chế độ "exact" brute-force cả corpus khi không tag —
+    # thà chậm mà chạy được còn hơn DEADLINE_EXCEEDED giữa lúc chuẩn bị thi.
+    encode_timeout_s: float = 15.0
+    search_timeout_s: float = 30.0
 
     # ── LLM (litellm: "provider/model") ──────────────────────────────
     llm_model: str = "groq/llama-3.3-70b-versatile"
@@ -33,7 +36,9 @@ class Settings(BaseSettings):
 
     # ── Vận hành ─────────────────────────────────────────────────────
     default_top_k: int = 20
-    max_top_k: int = 200
+    # 300: khớp thiết kế rerank (coarse top 1k -> rerank exact top 300) / exact
+    # (brute-force thẳng top 300) — trước là 200, cắt mất FE xin 300.
+    max_top_k: int = 300
     # Chặn 7 keyframe/shot chiếm hết trang (corpus CỐ Ý dày như vậy).
     diversity_max_per_video: int = 3
     diversity_min_time_gap_sec: float = 0.0

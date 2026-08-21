@@ -96,9 +96,11 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     targetUrl: "",
   });
 
+  // top_k=300: khớp thiết kế "rerank lấy top 1k rồi rerank exact top 300 / exact brute-
+  // force thẳng top 300" -- BE max_top_k cũng phải nới lên (config.py) không thì bị cắt.
   const { hits, totalMs, strategy, loading, error } = useSearch(
     submitted,
-    10,
+    300,
     useLlm,
     exactMode,
   );

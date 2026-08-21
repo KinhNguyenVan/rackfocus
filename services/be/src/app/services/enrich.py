@@ -42,8 +42,11 @@ Quy tắc:
 - Chọn tối đa {max_tags} lĩnh vực.
 - Truy vấn không gắn với lĩnh vực rõ ràng (ví dụ chỉ tả màu sắc, hành động chung) thì trả
   danh sách rỗng — hệ thống sẽ tìm toàn bộ kho.
+- "enriched" viết bằng tiếng Anh, NHƯNG tên riêng tiếng Việt (địa danh, di tích, tổ chức,
+  sự kiện, nhân vật) giữ NGUYÊN dạng tiếng Việt, KHÔNG dịch — ví dụ "Chùa Một Cột" phải
+  giữ nguyên "Chùa Một Cột" trong câu tiếng Anh, không thành "One Pillar Pagoda".
 - Chỉ trả JSON, không giải thích:
-  {{"tags": [<id>, ...], "enriched": "<câu truy vấn viết rõ hơn bằng tiếng Anh>"}}"""
+  {{"tags": [<id>, ...], "enriched": "<câu truy vấn viết rõ hơn bằng tiếng Anh, tên riêng tiếng Việt giữ nguyên>"}}"""
 
 
 @dataclass
