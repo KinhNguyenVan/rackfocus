@@ -52,12 +52,15 @@ FE (search mode: KIS | Temporal)
         ▼
 BE (api/search_temporal.py, new)
   asyncio.gather: encode(event1), enrich(event1), encode(event2), enrich(event2)
-  → 2 vectors + 2 tag sets (empty tag sets if use_llm=false)
-        │  gRPC SearchTemporal(events=[{vector, tags}, {vector, tags}])
+  → 2 vectors + a SINGLE shared tag set (union of both events' enriched tags,
+    empty if use_llm=false) — SearchTemporalRequest has one Filter for the
+    whole request (proto §"NB" below), not one per event
+        │  gRPC SearchTemporal(events=[{vector}, {vector}], filter.tags=[...])
         ▼
 core (searchcore/temporal.py, new)
   for each event: search_with_fallback(vector, tags, top_k=TRAKE_CANDIDATES_PER_EVENT)
-    (reuses existing search.py — same HNSW/exact/tombstone/tag-fallback machinery)
+    (same shared `tags` applied to both calls — reuses existing search.py's
+    HNSW/exact/tombstone/tag-fallback machinery unmodified)
   group both events' candidate rows by video_name
   for each video present in both groups:
     find best (i, j) pair: t2 > t1, min_gap_sec <= (t2-t1) <= max_gap_sec
@@ -80,6 +83,17 @@ core's `SearchTemporal` handler receives two pre-computed vectors via
 search, BE owns LLM/encoding orchestration" split. Gap bounds
 (`min_gap_sec`/`max_gap_sec`) are **not** part of the request — they're
 core-side config only (see below), same tier as `exact_subset_max`.
+
+**NB, correcting an earlier draft of this section:** `proto/searchcore/v1/search.proto`'s
+`SearchTemporalRequest` has exactly one `Filter filter` field for the whole
+request — `TemporalEvent` does NOT carry its own per-event tags. So when
+`use_llm=true`, BE enriches event1 and event2 independently (they describe
+different things, so each gets its own LLM call) but then takes the
+**union** of both tag sets and sends that single union as the one shared
+`filter.tags`, applied identically to both events' candidate searches inside
+core. This matches the wire contract exactly — no proto changes needed —
+at the cost of both events searching a (possibly) slightly broader tag set
+than either alone would pick.
 
 ## Matching algorithm
 
