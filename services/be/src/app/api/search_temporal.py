@@ -16,11 +16,11 @@ import grpc
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from .search import Hit
 from ..clients import searchcore
 from ..config import get_settings
 from ..services import enrich as enrich_svc
 from ..services import tagvocab
+from .search import Hit
 
 log = logging.getLogger("app.api.search_temporal")
 router = APIRouter()

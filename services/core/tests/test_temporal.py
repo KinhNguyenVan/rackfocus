@@ -7,7 +7,6 @@ của conftest.py (200 row, 4 video luân phiên theo i%4, keyframe_time = i*0.2
 """
 import numpy as np
 import pytest
-from conftest import DIM
 from searchcore import temporal as T
 
 
