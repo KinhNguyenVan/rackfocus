@@ -157,3 +157,40 @@ def test_pools_and_cuts_globally_across_videos(snap, truth):
     assert len(res.chains) == top_k
     got = [(c.row1, c.row2) for c in res.chains]
     assert got == want
+
+
+def test_no_common_video_returns_empty_with_warning(snap):
+    # candidates_per_event=1 -> event1's only candidate is its own row (video
+    # of row 0 = L26_V000), event2's only candidate is row 1 (video L26_V001).
+    res = T.search_temporal(
+        snap, q(snap, 0), q(snap, 1), tags=None,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.0, max_gap_sec=120.0,
+        lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
+    assert res.chains == []
+    assert "temporal_no_common_video" in res.warnings
+
+
+def test_no_candidates_for_event_returns_empty_with_warning(snap, monkeypatch):
+    from searchcore.search import SearchResult
+
+    empty = SearchResult(rows=np.empty(0, dtype=np.int64), scores=np.empty(0, dtype=np.float32))
+
+    def fake_search_with_fallback(snap_, qvec, **kw):
+        # trả rỗng cho MỌI lời gọi thứ hai trở đi (event2), giữ event1 bình thường
+        fake_search_with_fallback.calls += 1
+        if fake_search_with_fallback.calls == 2:
+            return empty
+        from searchcore.search import search_with_fallback as real
+        return real(snap_, qvec, **kw)
+
+    fake_search_with_fallback.calls = 0
+    monkeypatch.setattr(T, "search_with_fallback", fake_search_with_fallback)
+
+    res = T.search_temporal(
+        snap, q(snap, 4), q(snap, 12), tags=None,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.1, max_gap_sec=5.0,
+        lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
+    assert res.chains == []
+    assert "temporal_no_candidates_event2" in res.warnings
