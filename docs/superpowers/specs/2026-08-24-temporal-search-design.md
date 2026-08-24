@@ -108,10 +108,15 @@ still models `repeated TemporalEvent` for future extension, but the matching
 logic itself only needs to handle 2.
 
 Simplification versus the `temporal_search.py` prototype: no
-overlap-merging/clustering step (`merge_pairs_one_video`). That existed to
-support exploratory notebook analysis of many overlapping candidate pairs;
-a ranked-results endpoint just needs **one best chain per video**, which is
-also what one chain-card per video is meant to show.
+overlap-merging/clustering step (`merge_pairs_one_video`) — that existed to
+support exploratory notebook analysis of many overlapping candidate pairs,
+which a ranked-results endpoint doesn't need. The prototype's other idea,
+keeping multiple pairs per video (its `PAIRS_PER_VIDEO`), IS kept: each
+video contributes up to `TRAKE_MAX_PAIRS_PER_VIDEO` of its best-scoring valid
+pairs (not just one), all videos' surviving pairs are pooled into one list,
+sorted by score, and cut to the final `top_k`. A single video can appear
+more than once in the result if several of its pairs score well enough —
+each pair still renders as its own chain-card.
 
 **Hard filter (not a soft penalty):** a candidate pair is excluded entirely —
 never scored, never returned — if `t2 - t1 < TRAKE_MIN_GAP_SEC` or
@@ -136,6 +141,7 @@ Following the existing `_int`/`_bool`/`os.getenv` pattern already used for
 | Env var | Default | Meaning |
 |---|---|---|
 | `TRAKE_CANDIDATES_PER_EVENT` | 500 | top-K per event before the video join (bounds join cost) |
+| `TRAKE_MAX_PAIRS_PER_VIDEO` | 5 | how many of a video's best valid pairs survive into the pool before the global top_k cut |
 | `TRAKE_MIN_GAP_SEC` | 5.0 | hard floor on `t2-t1`; also the decay's zero-penalty point |
 | `TRAKE_MAX_GAP_SEC` | 120.0 | hard ceiling on `t2-t1` |
 | `TRAKE_LAMBDA` | 0.00557 | decay rate beyond `min_gap_sec` (from the prototype) |
@@ -226,8 +232,10 @@ matching the existing pattern (`tag_empty`, `llm_failed`, `tag_fallback` in
   calls to `search_temporal()` against a small synthetic snapshot (same
   `conftest.py` fixture pattern as `test_search.py`). Cases: order
   enforcement (t2<t1 pair excluded), gap filtering (dt<5 and dt>120
-  excluded, boundary values), best-pair-per-video selection when a video has
-  multiple valid pairs, empty-candidate case, no-common-video case.
+  excluded, boundary values), top-`TRAKE_MAX_PAIRS_PER_VIDEO`-per-video
+  capping when a video has more valid pairs than the cap, global top_k
+  cut across pooled pairs from multiple videos, empty-candidate case,
+  no-common-video case.
 - `services/be/tests/test_search_temporal.py` (new): through the real
   gRPC-backed test client (no mocks, matching the pattern from commit
   `86153e6`). Cases: endpoint end-to-end happy path, `use_llm` toggle
