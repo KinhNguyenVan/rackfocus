@@ -173,7 +173,8 @@ class TemporalChain(BaseModel):
 
 class TemporalSearchResponse(BaseModel):
     chains: list[TemporalChain]
-    warnings: list[str]
+    warnings: list[str]           # merged event1_*/event2_* warnings from both events, plus temporal_* ones
+    tags_used: list[int]          # union of both events' resolved tags (only meaningful when use_llm=True)
     snapshot_ver: str
     timings_ms: dict[str, float]
 
