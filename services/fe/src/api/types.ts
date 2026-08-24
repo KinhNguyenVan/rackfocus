@@ -74,6 +74,7 @@ export type TemporalChain = {
 export type TemporalSearchResponse = {
 	chains: TemporalChain[];
 	warnings: string[];
+	tags_used: number[];
 	snapshot_ver: string;
 	timings_ms: Record<string, number>;
 };

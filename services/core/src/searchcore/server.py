@@ -200,21 +200,24 @@ class SearchCoreServiceServicer(pb_grpc.SearchCoreServiceServicer):
         requested_strategy = request.filter.strategy if request.HasField("filter") else 0
         cfg = self.cfg
 
-        res = T.search_temporal(
-            snap, qvec1, qvec2, tags=tags,
-            candidates_per_event=cfg.trake_candidates_per_event if cfg else 500,
-            max_pairs_per_video=cfg.trake_max_pairs_per_video if cfg else 5,
-            min_gap_sec=cfg.trake_min_gap_sec if cfg else 5.0,
-            max_gap_sec=cfg.trake_max_gap_sec if cfg else 120.0,
-            lam=cfg.trake_lambda if cfg else 0.00557,
-            sim_weight=cfg.trake_sim_weight if cfg else 0.8,
-            time_weight=cfg.trake_time_weight if cfg else 0.2,
-            top_k=min(request.top_k, cfg.trake_top_k_chains if cfg else 20)
-                if request.top_k else (cfg.trake_top_k_chains if cfg else 20),
-            exact_max=cfg.exact_subset_max if cfg else 20_000,
-            rerank_candidates=params.rerank_candidates or (cfg.rerank_candidates if cfg else 800),
-            requested_strategy=requested_strategy,
-        )
+        try:
+            res = T.search_temporal(
+                snap, qvec1, qvec2, tags=tags,
+                candidates_per_event=cfg.trake_candidates_per_event if cfg else 500,
+                max_pairs_per_video=cfg.trake_max_pairs_per_video if cfg else 5,
+                min_gap_sec=cfg.trake_min_gap_sec if cfg else 5.0,
+                max_gap_sec=cfg.trake_max_gap_sec if cfg else 120.0,
+                lam=cfg.trake_lambda if cfg else 0.00557,
+                sim_weight=cfg.trake_sim_weight if cfg else 0.8,
+                time_weight=cfg.trake_time_weight if cfg else 0.2,
+                top_k=min(request.top_k, cfg.trake_top_k_chains if cfg else 20)
+                    if request.top_k else (cfg.trake_top_k_chains if cfg else 20),
+                exact_max=cfg.exact_subset_max if cfg else 20_000,
+                rerank_candidates=params.rerank_candidates or (cfg.rerank_candidates if cfg else 800),
+                requested_strategy=requested_strategy,
+            )
+        except ValueError as ex:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(ex))
 
         chains = []
         for c in res.chains:
@@ -236,12 +239,15 @@ class SearchCoreServiceServicer(pb_grpc.SearchCoreServiceServicer):
                 hits=hits, score=c.score, span_sec=c.t2 - c.t1))
 
         total_ms = (time.perf_counter() - t_all) * 1000
+        metrics.observe_many({**res.timings_ms, "total_ms": total_ms})
+        metrics.incr("queries_total")
         metrics.incr("temporal_queries_total")
         return pb.SearchTemporalResponse(
             chains=chains,
             meta=cpb.ResponseMeta(
                 request_id=request.ctx.request_id, snapshot_ver=snap.version,
-                timings=cpb.Timings(total_ms=total_ms), warnings=res.warnings),
+                timings=cpb.Timings(total_ms=total_ms), warnings=res.warnings,
+                tags_used=res.tags_used),
         )
 
     def Encode(self, request, context):

@@ -35,6 +35,7 @@ class TemporalResult:
     chains: list[Chain] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     timings_ms: dict[str, float] = field(default_factory=dict)
+    tags_used: tuple[int, ...] = ()
 
 
 def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
@@ -55,12 +56,24 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
                               requested_strategy=requested_strategy)
     t["search_ms"] = (time.perf_counter() - t0) * 1000
 
+    # Ghép warnings + tags_used của cả hai lần search_with_fallback -- trước đây bị bỏ
+    # hoàn toàn, mất tín hiệu tag_empty/tag_fallback đúng lúc rủi ro tag-partition của
+    # TRAKE (mỗi event enrich riêng) cần thấy nhất. Gộp TRƯỚC các warning early-return
+    # bên dưới.
+    warnings.extend(f"event1_{w}" for w in r1.warnings)
+    warnings.extend(f"event2_{w}" for w in r2.warnings)
+    tags_used = tuple(sorted(set(r1.tags_used) | set(r2.tags_used)))
+
+    missing = [c for c in ("video_name", "keyframe_time") if c not in snap.payload.column_names]
+    if missing:
+        raise ValueError(f"TRAKE cần payload có {missing} -- snapshot thiếu cột thời gian")
+
     if r1.rows.size == 0:
         warnings.append("temporal_no_candidates_event1")
-        return TemporalResult(warnings=warnings, timings_ms=t)
+        return TemporalResult(warnings=warnings, timings_ms=t, tags_used=tags_used)
     if r2.rows.size == 0:
         warnings.append("temporal_no_candidates_event2")
-        return TemporalResult(warnings=warnings, timings_ms=t)
+        return TemporalResult(warnings=warnings, timings_ms=t, tags_used=tags_used)
 
     t0 = time.perf_counter()
     names_col = snap.payload.column("video_name")
@@ -80,7 +93,7 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
     common = set(by_video1) & set(by_video2)
     if not common:
         warnings.append("temporal_no_common_video")
-        return TemporalResult(warnings=warnings, timings_ms=t)
+        return TemporalResult(warnings=warnings, timings_ms=t, tags_used=tags_used)
 
     pool: list[Chain] = []
     for video in common:
@@ -88,7 +101,7 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
         for row1, sim1, time1 in by_video1[video]:
             for row2, sim2, time2 in by_video2[video]:
                 dt = time2 - time1
-                if dt < min_gap_sec or dt > max_gap_sec:
+                if dt <= 0 or dt < min_gap_sec or dt > max_gap_sec:
                     continue
                 decay = float(np.exp(-lam * (dt - min_gap_sec)))
                 score = sim_weight * (sim1 + sim2) + time_weight * decay
@@ -103,4 +116,4 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
 
     pool.sort(key=lambda c: -c.score)
     t["join_ms"] = (time.perf_counter() - t0) * 1000
-    return TemporalResult(chains=pool[:top_k], warnings=warnings, timings_ms=t)
+    return TemporalResult(chains=pool[:top_k], warnings=warnings, timings_ms=t, tags_used=tags_used)

@@ -47,6 +47,7 @@ class TemporalChain(BaseModel):
 class TemporalSearchResponse(BaseModel):
     chains: list[TemporalChain]
     warnings: list[str]
+    tags_used: list[int]
     snapshot_ver: str
     timings_ms: dict[str, float]
 
@@ -124,7 +125,7 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
              parallel_ms, resp.meta.timings.total_ms, total_ms)
 
     return TemporalSearchResponse(
-        chains=chains, warnings=warnings,
+        chains=chains, warnings=warnings, tags_used=list(resp.meta.tags_used),
         snapshot_ver=resp.meta.snapshot_ver or snap_ver,
         timings_ms={
             "encode_and_enrich_parallel": round(parallel_ms, 2),
