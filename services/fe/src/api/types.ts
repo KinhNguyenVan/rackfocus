@@ -54,3 +54,26 @@ export type NeighborFrame = {
 export type NeighborsResponse = {
 	frames: NeighborFrame[];
 };
+
+// Khớp services/be/src/app/api/search_temporal.py.
+export type TemporalSearchRequest = {
+	event1: string;
+	event2: string;
+	use_llm?: boolean;
+	exact?: boolean;
+	top_k?: number;
+};
+
+export type TemporalChain = {
+	video_name: string;
+	score: number;
+	span_sec: number;
+	hits: SearchHit[]; // luôn đúng 2 phần tử, theo thứ tự event1 -> event2
+};
+
+export type TemporalSearchResponse = {
+	chains: TemporalChain[];
+	warnings: string[];
+	snapshot_ver: string;
+	timings_ms: Record<string, number>;
+};

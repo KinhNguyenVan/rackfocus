@@ -1,4 +1,4 @@
-import type { NeighborsResponse, SearchRequest, SearchResponse } from "./types";
+import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
 
 export async function search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse> {
 	const response = await fetch("/api/search", {
@@ -35,4 +35,23 @@ export async function neighbors(
 	}
 
 	return response.json() as Promise<NeighborsResponse>;
+}
+
+export async function searchTemporal(
+	request: TemporalSearchRequest,
+	signal?: AbortSignal,
+): Promise<TemporalSearchResponse> {
+	const response = await fetch("/api/search/temporal", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(request),
+		signal,
+	});
+
+	if (!response.ok) {
+		const detail = await response.text();
+		throw new Error(detail || `Temporal search failed (${response.status})`);
+	}
+
+	return response.json() as Promise<TemporalSearchResponse>;
 }
