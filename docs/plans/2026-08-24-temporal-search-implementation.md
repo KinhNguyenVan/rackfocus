@@ -10,8 +10,9 @@ FE toggle to switch between normal (KIS) and temporal search.
 unions their tags into one shared `Filter` (the proto only has one `Filter` per temporal
 request, not one per event), and sends two pre-computed vectors to core's new
 `SearchTemporal` handler. Core reuses the *existing* `search_with_fallback()` pipeline
-per event to get a bounded candidate pool, joins both pools by `video_name`, and keeps
-the single best-scoring valid (order + gap constrained) pair per video.
+per event to get a bounded candidate pool, joins both pools by `video_name`, keeps up
+to `TRAKE_MAX_PAIRS_PER_VIDEO` best-scoring valid (order + gap constrained) pairs per
+video, pools all videos' surviving pairs together, and cuts to the global `top_k`.
 
 **Tech Stack:** Python (core: FAISS/gRPC/numpy/pyarrow, be: FastAPI/pydantic/grpc.aio),
 TypeScript/React (fe), existing proto (no changes needed).
@@ -109,18 +110,48 @@ git commit -m "feat(core): add TRAKE_* config knobs for temporal search"
 This replaces the 1-line docstring stub. Built incrementally, one behavior per task,
 all driven by `services/core/tests/test_temporal.py` (currently also a 1-line stub).
 
-### Task 2: Scaffolding + "pair within gap bounds gets scored"
+### Task 2: Config addendum + scaffolding + "pair within gap bounds gets scored"
 
 **Files:**
+- Modify: `services/core/src/searchcore/config.py`
+- Modify: `.env.example`
 - Modify: `services/core/src/searchcore/temporal.py`
 - Modify: `services/core/tests/test_temporal.py`
+
+**Step 0: Add the config field Task 1 missed**
+
+Task 1 (already committed) added 7 `TRAKE_*` fields, but the algorithm's exact
+shape was only pinned down afterward: each video contributes up to N of its
+best-scoring valid pairs (not just a single best pair), so there needs to be a
+config knob for N. Add it now, following the same pattern as Task 1's fields.
+
+In `services/core/src/searchcore/config.py`, add right after
+`trake_candidates_per_event`:
+
+```python
+    trake_max_pairs_per_video: int = _int("TRAKE_MAX_PAIRS_PER_VIDEO", 5)
+```
+
+In `.env.example`, add right after `TRAKE_CANDIDATES_PER_EVENT=500`:
+
+```bash
+TRAKE_MAX_PAIRS_PER_VIDEO=5
+```
+
+Commit this addendum on its own before moving to the algorithm:
+
+```bash
+git add services/core/src/searchcore/config.py .env.example
+git commit -m "feat(core): add TRAKE_MAX_PAIRS_PER_VIDEO (missed in Task 1)"
+```
 
 **Step 1: Write the failing test**
 
 Replace the whole content of `services/core/tests/test_temporal.py` with:
 
 ```python
-"""Test ghép chuỗi TRAKE: đúng thứ tự, tôn trọng gap, một cặp tốt nhất mỗi video.
+"""Test ghép chuỗi TRAKE: đúng thứ tự, tôn trọng gap, top-K cặp mỗi video, gộp +
+cắt top_k trên toàn bộ pool.
 
 Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. Dùng lại fixture `snap`
 của conftest.py (200 row, 4 video luân phiên theo i%4, keyframe_time = i*0.2): row r nằm
@@ -136,10 +167,14 @@ def q(snap, row):
 
 
 def test_pair_within_gap_bounds_is_scored(snap):
-    # row 4 (V000, t=0.8s), row 12 (V000, t=2.4s) -> dt=1.6s
+    # candidates_per_event=1 -> event1's only candidate is row 4 itself (self-match,
+    # sim=1.0, unbeatable top-1), event2's only candidate is row 12 -- deterministic
+    # regardless of the corpus's random vectors, since there's nothing else to pick.
+    # row 4 (V000, t=0.8s), row 12 (V000, t=2.4s) -> dt=1.6s.
     res = T.search_temporal(
         snap, q(snap, 4), q(snap, 12), tags=None,
-        candidates_per_event=50, min_gap_sec=0.1, max_gap_sec=5.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.1, max_gap_sec=5.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
 
     assert len(res.chains) == 1
@@ -167,9 +202,11 @@ Replace `services/core/src/searchcore/temporal.py`:
 
 Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. Tái dùng
 search_with_fallback cho từng event (KHÔNG brute-force toàn corpus — đã đo là quá chậm
-nếu làm hai lần) rồi ghép theo video_name — mỗi video giữ đúng MỘT cặp tốt nhất, không
-làm lại bước merge-overlapping-pairs của bản notebook (giải quyết bài toán khác: phân
-tích khám phá nhiều cặp chồng lấn, không phải endpoint xếp hạng kết quả).
+nếu làm hai lần) rồi ghép theo video_name — mỗi video giữ tối đa max_pairs_per_video cặp
+tốt nhất (không chỉ MỘT), tất cả cặp của mọi video được gộp vào một pool rồi cắt còn
+top_k theo điểm cao nhất. Không làm lại bước merge-overlapping-pairs của bản notebook
+(giải quyết bài toán khác: phân tích khám phá nhiều cặp chồng lấn, không phải endpoint
+xếp hạng kết quả) -- nhưng CÓ giữ lại ý tưởng PAIRS_PER_VIDEO của notebook đó.
 """
 from __future__ import annotations
 
@@ -201,7 +238,8 @@ class TemporalResult:
 
 
 def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
-                    candidates_per_event: int, min_gap_sec: float, max_gap_sec: float,
+                    candidates_per_event: int, max_pairs_per_video: int,
+                    min_gap_sec: float, max_gap_sec: float,
                     lam: float, sim_weight: float, time_weight: float, top_k: int,
                     exact_max: int = 20_000, rerank_candidates: int = 800,
                     requested_strategy: int = 0) -> TemporalResult:
@@ -244,9 +282,9 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
         warnings.append("temporal_no_common_video")
         return TemporalResult(warnings=warnings, timings_ms=t)
 
-    chains: list[Chain] = []
+    pool: list[Chain] = []
     for video in common:
-        best: Chain | None = None
+        video_pairs: list[Chain] = []
         for row1, sim1, time1 in by_video1[video]:
             for row2, sim2, time2 in by_video2[video]:
                 dt = time2 - time1
@@ -254,18 +292,18 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
                     continue
                 decay = float(np.exp(-lam * (dt - min_gap_sec)))
                 score = sim_weight * (sim1 + sim2) + time_weight * decay
-                if best is None or score > best.score:
-                    best = Chain(video_name=video, row1=row1, row2=row2, score=score,
-                                sim1=sim1, sim2=sim2, t1=time1, t2=time2)
-        if best is not None:
-            chains.append(best)
+                video_pairs.append(Chain(video_name=video, row1=row1, row2=row2,
+                                         score=score, sim1=sim1, sim2=sim2,
+                                         t1=time1, t2=time2))
+        video_pairs.sort(key=lambda c: -c.score)
+        pool.extend(video_pairs[:max_pairs_per_video])
 
-    if not chains:
+    if not pool:
         warnings.append("temporal_no_valid_gap")
 
-    chains.sort(key=lambda c: -c.score)
+    pool.sort(key=lambda c: -c.score)
     t["join_ms"] = (time.perf_counter() - t0) * 1000
-    return TemporalResult(chains=chains[:top_k], warnings=warnings, timings_ms=t)
+    return TemporalResult(chains=pool[:top_k], warnings=warnings, timings_ms=t)
 ```
 
 **Step 4: Run test to verify it passes**
@@ -277,7 +315,7 @@ Expected: PASS
 
 ```bash
 git add services/core/src/searchcore/temporal.py services/core/tests/test_temporal.py
-git commit -m "feat(core): implement TRAKE pair scoring within gap bounds"
+git commit -m "feat(core): implement TRAKE pair scoring, capped per video, pooled globally"
 ```
 
 ### Task 3: Gap filter excludes pairs below min / above max
@@ -294,7 +332,8 @@ def test_pair_below_min_gap_excluded(snap):
     # same rows as above (dt=1.6s), but min_gap_sec=5.0 excludes it
     res = T.search_temporal(
         snap, q(snap, 4), q(snap, 12), tags=None,
-        candidates_per_event=50, min_gap_sec=5.0, max_gap_sec=120.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=5.0, max_gap_sec=120.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
     assert res.chains == []
     assert "temporal_no_valid_gap" in res.warnings
@@ -303,7 +342,8 @@ def test_pair_below_min_gap_excluded(snap):
 def test_pair_above_max_gap_excluded(snap):
     res = T.search_temporal(
         snap, q(snap, 4), q(snap, 12), tags=None,
-        candidates_per_event=50, min_gap_sec=0.1, max_gap_sec=1.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.1, max_gap_sec=1.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
     assert res.chains == []
     assert "temporal_no_valid_gap" in res.warnings
@@ -314,7 +354,8 @@ def test_order_violation_excluded_via_min_gap(snap):
     # row (4, t=0.8) -> dt = 0.8 - 2.4 = -1.6, always < a positive min_gap_sec
     res = T.search_temporal(
         snap, q(snap, 12), q(snap, 4), tags=None,
-        candidates_per_event=50, min_gap_sec=0.1, max_gap_sec=120.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.1, max_gap_sec=120.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
     assert res.chains == []
     assert "temporal_no_valid_gap" in res.warnings
@@ -334,47 +375,134 @@ git add services/core/tests/test_temporal.py
 git commit -m "test(core): cover TRAKE gap-filter and order-enforcement edge cases"
 ```
 
-### Task 4: Best pair per video (not all valid pairs)
+### Task 4: Cap to top-K pairs per video, then pool + sort across videos
 
 **Files:**
 - Modify: `services/core/tests/test_temporal.py`
 
-**Step 1: Write the failing test**
+Two behaviors to lock in: (a) a video with more valid pairs than
+`max_pairs_per_video` only surfaces its top-scoring N, and (b) pairs from
+different videos get pooled into one list and the *global* `top_k` cut applies
+across that pool (not per video). Both tests compute their expected values
+independently from `snap.refine` ("ground truth"), the same style
+`test_search.py` already uses (see its `truth` fixture) — never hardcode an
+expected row/score without deriving it from the corpus.
+
+**Step 1: Write the failing tests**
 
 Append:
 
 ```python
-def test_best_pair_per_video_selected_when_multiple_valid(snap):
-    """Video V000 có nhiều row (0,4,8,...,196). event1 khớp mạnh nhất với row 4 (t=0.8)
-    nhưng cũng có candidate ở row 0 (t=0.0); event2 khớp row 12 (t=2.4) và row 8
-    (t=1.6). Cả (4,12) và (0,8) đều hợp lệ (dt=1.6 và 1.6) nhưng chỉ 1 chain/video
-    được trả về -- chain có sim cao hơn thắng."""
-    # Dùng chính row 4 làm query 1 -> top match tất định là row 4 (sim=1.0), các
-    # row khác cùng video có sim thấp hơn nhưng vẫn > 0 vì vector ngẫu nhiên chuẩn hoá.
+import pytest
+
+
+@pytest.fixture
+def truth(snap):
+    return np.asarray(snap.refine, dtype=np.float32)
+
+
+def test_caps_pairs_per_video(snap, truth):
+    """V000 has 50 rows (0,4,8,...,196). candidates_per_event=200 (the whole
+    corpus) makes EVERY row of V000 a candidate for both events, deterministically
+    (membership doesn't depend on similarity ranking when top_k >= corpus size) --
+    so V000 has far more valid (row1,row2) pairs than a small cap. Only the top
+    `cap` by score should survive for that video."""
+    q1, q2 = q(snap, 4), q(snap, 12)
+    cap = 3
+    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 0.1, 120.0
+
     res = T.search_temporal(
-        snap, q(snap, 4), q(snap, 12), tags=None,
-        candidates_per_event=200, min_gap_sec=0.1, max_gap_sec=5.0,
-        lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
+        snap, q1, q2, tags=None,
+        candidates_per_event=200, max_pairs_per_video=cap,
+        min_gap_sec=min_gap, max_gap_sec=max_gap,
+        lam=lam, sim_weight=sim_w, time_weight=time_w, top_k=1000)
+
+    v000_rows = np.arange(0, 200, 4)  # every row of L26_V000
+    times = v000_rows * 0.2
+    sim1 = truth[v000_rows] @ q1
+    sim2 = truth[v000_rows] @ q2
+
+    expected = []
+    for i, r1 in enumerate(v000_rows):
+        for j, r2 in enumerate(v000_rows):
+            dt = times[j] - times[i]
+            if dt < min_gap or dt > max_gap:
+                continue
+            decay = np.exp(-lam * (dt - min_gap))
+            score = sim_w * (sim1[i] + sim2[j]) + time_w * decay
+            expected.append((score, int(r1), int(r2)))
+    expected.sort(key=lambda x: -x[0])
+    want = [(r1, r2) for _, r1, r2 in expected[:cap]]
 
     v000_chains = [c for c in res.chains if c.video_name == "L26_V000"]
-    assert len(v000_chains) == 1
-    # sim1=1.0 đúng ở row=4 (query trùng khít) nên đây phải là cặp thắng.
-    assert v000_chains[0].row1 == 4
+    assert len(v000_chains) == cap
+    got = {(c.row1, c.row2) for c in v000_chains}
+    assert got == set(want)
+
+
+def test_pools_and_cuts_globally_across_videos(snap, truth):
+    """candidates_per_event=200 makes ALL 4 videos have valid pairs (same
+    reasoning as above, applied to every video). With a per-video cap of 2 and
+    a small global top_k, the final result must be the true top-`top_k` pairs
+    across the WHOLE pool (possibly multiple per video), not "top_k videos each
+    contributing one" or any other per-video-first cut."""
+    q1, q2 = q(snap, 4), q(snap, 12)
+    cap = 2
+    top_k = 5
+    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 0.1, 120.0
+
+    res = T.search_temporal(
+        snap, q1, q2, tags=None,
+        candidates_per_event=200, max_pairs_per_video=cap,
+        min_gap_sec=min_gap, max_gap_sec=max_gap,
+        lam=lam, sim_weight=sim_w, time_weight=time_w, top_k=top_k)
+
+    sim1_all = truth @ q1
+    sim2_all = truth @ q2
+    all_rows = np.arange(200)
+    video_of = all_rows % 4
+    times_all = all_rows * 0.2
+
+    per_video_top: list[tuple] = []
+    for v in range(4):
+        rows_v = all_rows[video_of == v]
+        pairs = []
+        for r1 in rows_v:
+            for r2 in rows_v:
+                dt = times_all[r2] - times_all[r1]
+                if dt < min_gap or dt > max_gap:
+                    continue
+                decay = np.exp(-lam * (dt - min_gap))
+                score = sim_w * (sim1_all[r1] + sim2_all[r2]) + time_w * decay
+                pairs.append((score, int(r1), int(r2)))
+        pairs.sort(key=lambda x: -x[0])
+        per_video_top.extend(pairs[:cap])
+
+    per_video_top.sort(key=lambda x: -x[0])
+    want = [(r1, r2) for _, r1, r2 in per_video_top[:top_k]]
+
+    assert len(res.chains) == top_k
+    got = [(c.row1, c.row2) for c in res.chains]
+    assert got == want
 ```
 
-**Step 2: Run to verify it fails or passes**
+**Step 2: Run to verify these fail or pass**
 
-Run: `cd services/core && pytest tests/test_temporal.py -v`
-Expected: PASS — the `if best is None or score > best.score` logic from Task 2
-already enforces one-best-per-video. This test exists to lock that behavior in and
-catch a future regression (e.g. someone "fixing" it to return all pairs). If it
-fails, the dedup logic is broken — fix `search_temporal` before continuing.
+Run: `cd services/core && pytest tests/test_temporal.py -v -k "caps_pairs_per_video or pools_and_cuts"`
+Expected: PASS — Task 2's implementation already sorts each video's pairs, caps
+to `max_pairs_per_video`, pools across videos, sorts the pool, and cuts to
+`top_k`. These tests exist to lock that exact behavior in (both the per-video
+cap AND the fact that the top_k cut happens on the pooled, cross-video list —
+not on a per-video-first basis) and catch a future regression. If either fails,
+compare the actual `res.chains` against `want`/`expected` printed via `-s` to
+find where the implementation's pooling/sorting/cutting diverges from the
+independently-computed ground truth, and fix `search_temporal` before continuing.
 
 **Step 3: Commit**
 
 ```bash
 git add services/core/tests/test_temporal.py
-git commit -m "test(core): lock in one-best-chain-per-video behavior"
+git commit -m "test(core): lock in per-video pair cap and cross-video pooling"
 ```
 
 ### Task 5: No-common-video and no-candidates warnings
@@ -392,7 +520,8 @@ def test_no_common_video_returns_empty_with_warning(snap):
     # of row 0 = L26_V000), event2's only candidate is row 1 (video L26_V001).
     res = T.search_temporal(
         snap, q(snap, 0), q(snap, 1), tags=None,
-        candidates_per_event=1, min_gap_sec=0.0, max_gap_sec=120.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.0, max_gap_sec=120.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
     assert res.chains == []
     assert "temporal_no_common_video" in res.warnings
@@ -416,7 +545,8 @@ def test_no_candidates_for_event_returns_empty_with_warning(snap, monkeypatch):
 
     res = T.search_temporal(
         snap, q(snap, 4), q(snap, 12), tags=None,
-        candidates_per_event=50, min_gap_sec=0.1, max_gap_sec=5.0,
+        candidates_per_event=1, max_pairs_per_video=10,
+        min_gap_sec=0.1, max_gap_sec=5.0,
         lam=0.01, sim_weight=0.8, time_weight=0.2, top_k=10)
     assert res.chains == []
     assert "temporal_no_candidates_event2" in res.warnings
@@ -460,18 +590,26 @@ Append to `services/core/tests/test_server.py`:
 First, add a fixture right after the existing `stubs` fixture in
 `test_server.py` — the default `Config()` used by `stubs` has `TRAKE_MIN_GAP_SEC`
 default to 5.0, but the `snap` fixture's rows only span 0.2s apart per row, so a
-dedicated small-gap config is needed to exercise a real chain in this test corpus
-(`Config` is `@dataclass(frozen=True)`, so overriding specific fields at
-construction works out of the box):
+dedicated small-gap config is needed to exercise a real chain in this test
+corpus. It also pins `trake_candidates_per_event=1` so the RPC-level test below
+gets a fully deterministic single candidate per event (and therefore a single
+pair) regardless of `TRAKE_MAX_PAIRS_PER_VIDEO`'s default — the per-video-cap
+and cross-video-pooling behavior itself is already covered thoroughly at the
+pure-function level in Task 4; this RPC test only needs to prove the gRPC
+plumbing carries a chain through correctly. (`Config` is `@dataclass(frozen=True)`,
+so overriding specific fields at construction works out of the box):
 
 ```python
 @pytest.fixture
 def stubs_small_gap(snap):
     """Như `stubs` nhưng TRAKE_MIN_GAP_SEC nhỏ để test được với dt=1.6s của
-    fixture snap có sẵn (video cách nhau keyframe_time=0.2s/row)."""
+    fixture snap có sẵn (video cách nhau keyframe_time=0.2s/row), và
+    candidates_per_event=1 để chỉ có đúng 1 cặp (kiểm tra pooling/cap đã có
+    ở test_temporal.py rồi, RPC test này chỉ cần xác nhận đường ống gRPC)."""
     holder = IndexHolder()
     holder.swap(snap)
-    cfg = Config(trake_min_gap_sec=0.1, trake_max_gap_sec=5.0)
+    cfg = Config(trake_min_gap_sec=0.1, trake_max_gap_sec=5.0,
+                trake_candidates_per_event=1)
     sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
@@ -583,6 +721,7 @@ from . import temporal as T
         res = T.search_temporal(
             snap, qvec1, qvec2, tags=tags,
             candidates_per_event=cfg.trake_candidates_per_event if cfg else 500,
+            max_pairs_per_video=cfg.trake_max_pairs_per_video if cfg else 5,
             min_gap_sec=cfg.trake_min_gap_sec if cfg else 5.0,
             max_gap_sec=cfg.trake_max_gap_sec if cfg else 120.0,
             lam=cfg.trake_lambda if cfg else 0.00557,
