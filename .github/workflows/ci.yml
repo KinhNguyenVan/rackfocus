@@ -15,7 +15,11 @@ jobs:
           - svc: core
             deps: faiss-cpu numpy pyarrow grpcio protobuf
           - svc: be
-            deps: faiss-cpu numpy pyarrow grpcio protobuf fastapi 'httpx<0.29' pydantic-settings
+            # boto3/requests/tqdm/python-dotenv: clients/s3.py import cả 4 ở module
+            # level, mà api/router.py -> api/browse.py -> clients/s3.py, nên thiếu
+            # bất kỳ cái nào là không import nổi app, hỏng toàn bộ test BE chứ không
+            # riêng test nào đụng S3.
+            deps: faiss-cpu numpy pyarrow grpcio protobuf fastapi 'httpx<0.29' pydantic-settings boto3 requests tqdm python-dotenv
           - svc: ingest
             # cv2: stages/__init__.py re-export media.py -> import ở module level.
             # litellm/pymongo/pydantic*: cần cho ingest.domain.
