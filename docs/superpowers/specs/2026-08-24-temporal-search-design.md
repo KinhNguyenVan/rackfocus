@@ -63,10 +63,10 @@ core (searchcore/temporal.py, new)
     HNSW/exact/tombstone/tag-fallback machinery unmodified)
   group both events' candidate rows by video_name
   for each video present in both groups:
-    find best (i, j) pair: t2 > t1, min_gap_sec <= (t2-t1) <= max_gap_sec
+    find all valid pairs: t2 > t1, min_gap_sec <= (t2-t1) <= max_gap_sec
     score = sim_weight*(s1+s2) + time_weight*decay(t2-t1)
-    keep only the single best-scoring valid pair per video
-  rank videos by that score, return top TRAKE_TOP_K_CHAINS chains
+    keep its top TRAKE_MAX_PAIRS_PER_VIDEO pairs by score
+  pool ALL videos' surviving pairs, sort by score, cut to the global top_k
         │
         ▼
 BE maps TemporalChain (proto) → TemporalChain (pydantic, reuses existing Hit model)
@@ -223,7 +223,7 @@ matching the existing pattern (`tag_empty`, `llm_failed`, `tag_fallback` in
 - Empty candidate pool for event 1 or 2 → `warnings: ["temporal_no_candidates_event1"]` (or `_event2`), `chains: []`.
 - No video appears in both candidate pools → `warnings: ["temporal_no_common_video"]`, `chains: []`.
 - Shared videos exist but no pair passes the gap filter → `warnings: ["temporal_no_valid_gap"]`, `chains: []` (distinguishes "right video, wrong timing" from "never found the video," useful for debugging query wording).
-- LLM failure for one event (when `use_llm=true`) → same fallback as normal search: proceed untagged for that event, add `llm_failed` warning.
+- LLM failure for one event (when `use_llm=true`) → because `SearchTemporalRequest` has a SINGLE shared `Filter` for both events (see the "NB" note above), there is no per-event untagged fallback: the surviving event's tags are applied to BOTH events, including the one whose enrichment failed. BE adds an `llm_failed_event1`/`llm_failed_event2` warning so this is visible, but the failed event still searches under the other event's tags rather than untagged.
 - Core/gRPC errors (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `INVALID_ARGUMENT`) → same HTTP status mapping `api/search.py` already uses (503/504/400/502).
 
 ## Testing plan
