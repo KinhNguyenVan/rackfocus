@@ -13,6 +13,7 @@ import grpc
 import numpy as np
 
 from . import search as S
+from . import temporal as T
 from .metrics import metrics
 from .pb.searchcore.v1 import admin_pb2 as apb
 from .pb.searchcore.v1 import admin_pb2_grpc as apb_grpc
@@ -178,6 +179,69 @@ class SearchCoreServiceServicer(pb_grpc.SearchCoreServiceServicer):
                 request_id=request.ctx.request_id, snapshot_ver=snap.version,
                 timings=timings, warnings=res.warnings, tags_used=res.tags_used),
             total_estimated=int(res.candidate_count),
+        )
+
+    def SearchTemporal(self, request, context):
+        t_all = time.perf_counter()
+        snap = self._snap_or_abort(context)
+
+        if len(request.events) != 2:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT,
+                          "v1 SearchTemporal chỉ nhận đúng 2 event")
+
+        try:
+            qvec1 = _query_vector(request.events[0], self.encoder, snap)
+            qvec2 = _query_vector(request.events[1], self.encoder, snap)
+        except ValueError as ex:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(ex))
+
+        params = request.params
+        tags = list(request.filter.tags) if request.HasField("filter") else []
+        requested_strategy = request.filter.strategy if request.HasField("filter") else 0
+        cfg = self.cfg
+
+        res = T.search_temporal(
+            snap, qvec1, qvec2, tags=tags,
+            candidates_per_event=cfg.trake_candidates_per_event if cfg else 500,
+            max_pairs_per_video=cfg.trake_max_pairs_per_video if cfg else 5,
+            min_gap_sec=cfg.trake_min_gap_sec if cfg else 5.0,
+            max_gap_sec=cfg.trake_max_gap_sec if cfg else 120.0,
+            lam=cfg.trake_lambda if cfg else 0.00557,
+            sim_weight=cfg.trake_sim_weight if cfg else 0.8,
+            time_weight=cfg.trake_time_weight if cfg else 0.2,
+            top_k=min(request.top_k, cfg.trake_top_k_chains if cfg else 20)
+                if request.top_k else (cfg.trake_top_k_chains if cfg else 20),
+            exact_max=cfg.exact_subset_max if cfg else 20_000,
+            rerank_candidates=params.rerank_candidates or (cfg.rerank_candidates if cfg else 800),
+            requested_strategy=requested_strategy,
+        )
+
+        chains = []
+        for c in res.chains:
+            rows = np.array([c.row1, c.row2])
+            payloads = _build_payloads(snap, rows) if request.with_payload else [None, None]
+            hits = [
+                cpb.SearchHit(
+                    id=int(snap.idmap[c.row1]), index_row=int(c.row1),
+                    score_exact=float(c.sim1), score_fused=float(c.sim1), rank=0,
+                    tier=TIER_KEYFRAME,
+                    **({"payload": payloads[0]} if payloads[0] is not None else {})),
+                cpb.SearchHit(
+                    id=int(snap.idmap[c.row2]), index_row=int(c.row2),
+                    score_exact=float(c.sim2), score_fused=float(c.sim2), rank=1,
+                    tier=TIER_KEYFRAME,
+                    **({"payload": payloads[1]} if payloads[1] is not None else {})),
+            ]
+            chains.append(pb.TemporalChain(
+                hits=hits, score=c.score, span_sec=c.t2 - c.t1))
+
+        total_ms = (time.perf_counter() - t_all) * 1000
+        metrics.incr("temporal_queries_total")
+        return pb.SearchTemporalResponse(
+            chains=chains,
+            meta=cpb.ResponseMeta(
+                request_id=request.ctx.request_id, snapshot_ver=snap.version,
+                timings=cpb.Timings(total_ms=total_ms), warnings=res.warnings),
         )
 
     def Encode(self, request, context):
