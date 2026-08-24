@@ -2,8 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { neighbors as fetchNeighbors } from "./api/client";
-import type { NeighborFrame, SearchHit } from "./api/types";
+import type { NeighborFrame, SearchHit, TemporalChain } from "./api/types";
 import { useSearch } from "./hooks/useSearch";
+import { useTemporalSearch } from "./hooks/useTemporalSearch";
+import { TemporalQueryBuilder } from "./components/TemporalQueryBuilder";
+import { TemporalChainCard } from "./components/TemporalChainCard";
 import "./styles/global.css";
 
 type Task = "kis" | "qa" | "trake";
@@ -94,6 +97,11 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   // rerank_candidates (hoặc EXACT_SUBSET nếu tag đủ hẹp). "exact" = ép brute-force
   // toàn candidate/corpus, bỏ qua HNSW hoàn toàn -- chậm hơn, không xấp xỉ.
   const [exactMode, setExactMode] = useState(false);
+  const [searchMode, setSearchMode] = useState<"kis" | "temporal">("kis");
+  const [event1, setEvent1] = useState("");
+  const [event2, setEvent2] = useState("");
+  const [submittedEvent1, setSubmittedEvent1] = useState("");
+  const [submittedEvent2, setSubmittedEvent2] = useState("");
   const [selected, setSelected] = useState<Result[]>([]);
   const [task, setTask] = useState<Task>("kis");
   const [qaAnswer, setQaAnswer] = useState("");
@@ -157,6 +165,14 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     exactMode,
   );
 
+  const {
+    chains,
+    totalMs: temporalTotalMs,
+    warnings: temporalWarnings,
+    loading: temporalLoading,
+    error: temporalError,
+  } = useTemporalSearch(submittedEvent1, submittedEvent2, useLlm, exactMode);
+
   const results = useMemo(
     () =>
       hits.map((hit) => ({
@@ -178,6 +194,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       setChosenTopics(saved.selectedTopics ?? []);
       setUseLlm(saved.useLlm ?? true);
       setExactMode(saved.exactMode ?? false);
+      setSearchMode(saved.searchMode ?? "kis");
     } catch {}
   }, []);
 
@@ -191,9 +208,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         selectedTopics: chosenTopics,
         useLlm,
         exactMode,
+        searchMode,
       }),
     );
-  }, [query, flag, service, chosenTopics, useLlm, exactMode]);
+  }, [query, flag, service, chosenTopics, useLlm, exactMode, searchMode]);
 
   useEffect(() => {
     const handleClick = () =>
@@ -208,6 +226,17 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         ? items.filter((item) => item.point_id !== result.point_id)
         : [...items, result],
     );
+  };
+
+  const useChain = (chain: TemporalChain) => {
+    const results: Result[] = chain.hits.map((hit) => ({
+      ...hit,
+      video: hit.video_name,
+      url:
+        hit.keyframe_url ||
+        `https://placehold.co/640x360/e9eef0/354d58?text=${hit.video_name}%23${hit.frame}`,
+    }));
+    setSelected(results);
   };
 
   const clear = () => {
@@ -231,6 +260,14 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
 
   function search(event: FormEvent) {
     event.preventDefault();
+    if (searchMode === "temporal") {
+      if (event1.trim() && event2.trim()) {
+        setSelected([]);
+        setSubmittedEvent1(event1.trim());
+        setSubmittedEvent2(event2.trim());
+      }
+      return;
+    }
     if (query.trim()) {
       setSelected([]);
       setSubmitted(query.trim());
@@ -430,47 +467,77 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                     <h5 className="card-title">
                       <i className="bi bi-image"></i> Image Search
                     </h5>
+                    <div className="btn-group btn-group-sm mb-2" role="group">
+                      <input
+                        type="radio"
+                        className="btn-check"
+                        name="searchTopMode"
+                        id="modeKis"
+                        checked={searchMode === "kis"}
+                        onChange={() => setSearchMode("kis")}
+                      />
+                      <label className="btn btn-outline-secondary" htmlFor="modeKis">
+                        KIS (1 câu)
+                      </label>
+                      <input
+                        type="radio"
+                        className="btn-check"
+                        name="searchTopMode"
+                        id="modeTemporal"
+                        checked={searchMode === "temporal"}
+                        onChange={() => setSearchMode("temporal")}
+                      />
+                      <label className="btn btn-outline-secondary" htmlFor="modeTemporal">
+                        Temporal (2 sự kiện)
+                      </label>
+                    </div>
                     <form onSubmit={search}>
-                      <div className="input-group mb-3">
-                        <input
-                          type="text"
-                          className="form-control"
-                          placeholder="Search by text..."
-                          value={query}
-                          onChange={(e) => setQuery(e.target.value)}
+                      {searchMode === "temporal" ? (
+                        <TemporalQueryBuilder
+                          event1={event1}
+                          event2={event2}
+                          onEvent1Change={setEvent1}
+                          onEvent2Change={setEvent2}
                         />
-                        <input
-                          type="text"
-                          className="form-control"
-                          placeholder="Enter flag..."
-                          value={flag}
-                          onChange={(e) => setFlag(e.target.value)}
-                        />
-                        <select
-                          className="form-select"
-                          style={{ maxWidth: "120px" }}
-                          value={service}
-                          onChange={(e) => setService(e.target.value)}
-                        >
-                          <option value="image">Image</option>
-                          <option value="caption">Caption</option>
-                          <option value="ocr">OCR</option>
-                        </select>
-                        <button
-                          className="btn btn-outline-secondary"
-                          type="submit"
-                        >
-                          <i className="bi bi-search"></i>
-                        </button>
-                        <button
-                          className="btn btn-sm btn-outline-danger ms-2"
-                          type="button"
-                          onClick={clear}
-                          title="Clear saved search state"
-                        >
-                          Clear
-                        </button>
-                      </div>
+                      ) : (
+                        <div className="input-group mb-3">
+                          <input
+                            type="text"
+                            className="form-control"
+                            placeholder="Search by text..."
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                          />
+                          <input
+                            type="text"
+                            className="form-control"
+                            placeholder="Enter flag..."
+                            value={flag}
+                            onChange={(e) => setFlag(e.target.value)}
+                          />
+                          <select
+                            className="form-select"
+                            style={{ maxWidth: "120px" }}
+                            value={service}
+                            onChange={(e) => setService(e.target.value)}
+                          >
+                            <option value="image">Image</option>
+                            <option value="caption">Caption</option>
+                            <option value="ocr">OCR</option>
+                          </select>
+                        </div>
+                      )}
+                      <button className="btn btn-outline-secondary" type="submit">
+                        <i className="bi bi-search"></i>
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline-danger ms-2"
+                        type="button"
+                        onClick={clear}
+                        title="Clear saved search state"
+                      >
+                        Clear
+                      </button>
                     </form>
                     <div className="form-check form-switch mb-3">
                       <input
@@ -627,68 +694,94 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                   <h5 className="card-title">
                     <i className="bi bi-database"></i> Images results
                   </h5>
-                  {loading && (
-                    <div className="text-center my-3">
-                      <div
-                        className="spinner-border text-primary"
-                        role="status"
-                      >
-                        <span className="visually-hidden">Loading...</span>
-                      </div>
-                    </div>
-                  )}
-                  {error && <p className="text-danger">{error}</p>}
-                  <div
-                    className="row row-cols-2 row-cols-sm-3 row-cols-md-5 g-2"
-                    id="imageContainer"
-                  >
-                    {results.map((result) => {
-                      const isSelected = selected.some(
-                        (item) => item.point_id === result.point_id,
-                      );
-                      const selectedIndex =
-                        selected.findIndex(
-                          (item) => item.point_id === result.point_id,
-                        ) + 1;
-                      return (
-                        <div
-                          className="col p-2 text-center"
-                          key={result.point_id}
-                        >
-                          <div className="card position-relative">
-                            <img
-                              src={result.url}
-                              className="card-img-top main-img"
-                              alt="scene"
-                              onContextMenu={(e) =>
-                                handleContextMenu(e, result.url, result.video)
-                              }
-                            />
-                            <div className="card-body p-2">
-                              <input
-                                type="checkbox"
-                                className="form-check-input me-1 selectImg"
-                                checked={isSelected}
-                                onChange={() => toggle(result)}
-                              />
-                              <small>
-                                {result.video}#{result.frame}
-                              </small>
-                            </div>
-                            {isSelected && (
-                              <span className="badge bg-primary position-absolute top-0 start-0 m-1 order-badge">
-                                {selectedIndex}
-                              </span>
-                            )}
+                  {searchMode === "temporal" ? (
+                    <>
+                      {temporalLoading && (
+                        <div className="text-center my-3">
+                          <div className="spinner-border text-primary" role="status">
+                            <span className="visually-hidden">Loading...</span>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                  {totalMs !== null && (
-                    <small className="text-muted d-block mt-3">
-                      {results.length} results · {totalMs.toFixed(2)} ms
-                    </small>
+                      )}
+                      {temporalError && <p className="text-danger">{temporalError}</p>}
+                      {temporalWarnings.length > 0 && (
+                        <p className="text-muted small">{temporalWarnings.join(", ")}</p>
+                      )}
+                      {chains.map((chain, i) => (
+                        <TemporalChainCard key={i} chain={chain} onUseChain={useChain} />
+                      ))}
+                      {temporalTotalMs !== null && (
+                        <small className="text-muted d-block mt-3">
+                          {chains.length} chains · {temporalTotalMs.toFixed(2)} ms
+                        </small>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {loading && (
+                        <div className="text-center my-3">
+                          <div
+                            className="spinner-border text-primary"
+                            role="status"
+                          >
+                            <span className="visually-hidden">Loading...</span>
+                          </div>
+                        </div>
+                      )}
+                      {error && <p className="text-danger">{error}</p>}
+                      <div
+                        className="row row-cols-2 row-cols-sm-3 row-cols-md-5 g-2"
+                        id="imageContainer"
+                      >
+                        {results.map((result) => {
+                          const isSelected = selected.some(
+                            (item) => item.point_id === result.point_id,
+                          );
+                          const selectedIndex =
+                            selected.findIndex(
+                              (item) => item.point_id === result.point_id,
+                            ) + 1;
+                          return (
+                            <div
+                              className="col p-2 text-center"
+                              key={result.point_id}
+                            >
+                              <div className="card position-relative">
+                                <img
+                                  src={result.url}
+                                  className="card-img-top main-img"
+                                  alt="scene"
+                                  onContextMenu={(e) =>
+                                    handleContextMenu(e, result.url, result.video)
+                                  }
+                                />
+                                <div className="card-body p-2">
+                                  <input
+                                    type="checkbox"
+                                    className="form-check-input me-1 selectImg"
+                                    checked={isSelected}
+                                    onChange={() => toggle(result)}
+                                  />
+                                  <small>
+                                    {result.video}#{result.frame}
+                                  </small>
+                                </div>
+                                {isSelected && (
+                                  <span className="badge bg-primary position-absolute top-0 start-0 m-1 order-badge">
+                                    {selectedIndex}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {totalMs !== null && (
+                        <small className="text-muted d-block mt-3">
+                          {results.length} results · {totalMs.toFixed(2)} ms
+                        </small>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
