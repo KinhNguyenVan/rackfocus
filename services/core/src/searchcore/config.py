@@ -56,6 +56,7 @@ class Config:
     # not the whole corpus (a full brute-force rerank per event was already measured
     # as too slow for a single query; doing it twice would be worse).
     trake_candidates_per_event: int = _int("TRAKE_CANDIDATES_PER_EVENT", 500)
+    trake_max_pairs_per_video: int = _int("TRAKE_MAX_PAIRS_PER_VIDEO", 5)
     # Hard floor on (t2 - t1): pairs closer together (including negative = order
     # violated) are excluded entirely, never scored. Also doubles as the decay's
     # zero-penalty reference point.
