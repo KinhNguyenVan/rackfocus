@@ -82,7 +82,7 @@ def test_caps_pairs_per_video(snap, truth):
     `cap` by score should survive for that video."""
     q1, q2 = q(snap, 4), q(snap, 12)
     cap = 3
-    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 0.1, 120.0
+    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 3.0, 120.0
 
     res = T.search_temporal(
         snap, q1, q2, tags=None,
@@ -122,7 +122,7 @@ def test_pools_and_cuts_globally_across_videos(snap, truth):
     q1, q2 = q(snap, 4), q(snap, 12)
     cap = 2
     top_k = 5
-    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 0.1, 120.0
+    lam, sim_w, time_w, min_gap, max_gap = 0.01, 0.8, 0.2, 3.0, 120.0
 
     res = T.search_temporal(
         snap, q1, q2, tags=None,
