@@ -485,7 +485,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         name="searchTopMode"
                         id="modeTemporal"
                         checked={searchMode === "temporal"}
-                        onChange={() => setSearchMode("temporal")}
+                        onChange={() => {
+                          setSearchMode("temporal");
+                          setUseLlm(false);
+                        }}
                       />
                       <label className="btn btn-outline-secondary" htmlFor="modeTemporal">
                         Temporal (2 sự kiện)
