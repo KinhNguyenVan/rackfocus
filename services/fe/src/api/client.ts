@@ -20,6 +20,7 @@ export async function neighbors(
 	keyframeUrl: string,
 	before = 25,
 	after = 25,
+	toKey?: string,
 	signal?: AbortSignal,
 ): Promise<NeighborsResponse> {
 	const params = new URLSearchParams({
@@ -27,6 +28,7 @@ export async function neighbors(
 		before: String(before),
 		after: String(after),
 	});
+	if (toKey) params.set("to_key", toKey);
 	const response = await fetch(`/api/neighbors?${params}`, { signal });
 
 	if (!response.ok) {

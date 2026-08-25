@@ -32,6 +32,28 @@ class ProgressPercentage:
             self._pbar.update(bytes_amount)
 
 
+def neighbor_slice_bounds(sorted_frames: list, from_frame: int, to_frame: int,
+                          before: int, after: int) -> tuple:
+    """(start, end) để cắt `sorted_frames[start:end]` -- N khung trước from_frame đến
+    N khung sau to_frame, theo VỊ TRÍ trong danh sách (không phải số học frame, vì
+    keyframe không cách đều nhau).
+
+    to_frame == from_frame tái hiện đúng hành vi 1-mỏ neo cũ của get_neighbor_frames.
+    Thứ tự from/to không quan trọng (chain temporal luôn đúng thứ tự, nhưng lấy
+    min/max ở đây không tốn gì thêm).
+    """
+    def _index(frame: int) -> int:
+        try:
+            return sorted_frames.index(frame)
+        except ValueError:
+            raise ValueError(f"Không tìm thấy frame {frame} trong danh sách S3") from None
+
+    lo, hi = sorted((_index(from_frame), _index(to_frame)))
+    start = max(0, lo - before)
+    end = min(len(sorted_frames), hi + after + 1)
+    return start, end
+
+
 class AWSStorageHelper:
     """Class tổng hợp tất cả các thao tác tương tác với AWS S3 và CloudFront CDN."""
 
@@ -323,14 +345,18 @@ class AWSStorageHelper:
             print(f"❌ Lỗi tạo Presigned URL: {e}")
             return None
 
-    def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25) -> list:
-        """Tìm N khung hình trước và N khung hình sau một frame hiện tại (Dành cho AIC Keyframes)."""
-        match = re.match(r"(.*/)(\d+)(\.webp)", current_key)
-        if not match:
-            raise ValueError(f"Định dạng key không hợp lệ: {current_key}")
-
-        prefix, current_frame_str, _ext = match.groups()
-        current_frame_num = int(current_frame_str)
+    def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25,
+                            to_key: str | None = None) -> list:
+        """N khung trước `current_key` .. N khung sau `to_key` (mặc định `to_key` =
+        `current_key`, tức 1-mỏ neo như cũ). Dành cho AIC Keyframes. Cả hai key phải
+        cùng video (cùng thư mục S3) -- dùng cho ô "xem frames giữa 2 sự kiện" của
+        temporal search, nơi cả 2 hit luôn cùng video.
+        """
+        to_key = to_key or current_key
+        prefix, current_frame_num = self._parse_frame_key(current_key)
+        to_prefix, to_frame_num = self._parse_frame_key(to_key)
+        if to_prefix != prefix:
+            raise ValueError("current_key và to_key phải cùng video")
 
         paginator = self.s3_client.get_paginator("list_objects_v2")
         all_keys = []
@@ -340,22 +366,25 @@ class AWSStorageHelper:
                     key = obj["Key"]
                     m = re.match(r".*/(\d+)\.webp$", key)
                     if m:
-                        frame_num = int(m.group(1))
-                        all_keys.append((frame_num, key))
+                        all_keys.append((int(m.group(1)), key))
 
         if not all_keys:
             return []
 
         all_keys.sort(key=lambda x: x[0])
-        index = next((i for i, (num, _) in enumerate(all_keys) if num == current_frame_num), None)
+        frame_nums = [n for n, _ in all_keys]
+        start, end = neighbor_slice_bounds(frame_nums, current_frame_num, to_frame_num,
+                                           before, after)
 
-        if index is None:
-            raise ValueError("Không tìm thấy frame hiện tại trong danh sách S3")
+        return [k for _, k in all_keys[start:end] if k not in (current_key, to_key)]
 
-        start = max(0, index - before)
-        end = min(len(all_keys), index + after + 1)
-
-        return [k for _, k in all_keys[start:end] if k != current_key]
+    @staticmethod
+    def _parse_frame_key(key: str) -> tuple:
+        match = re.match(r"(.*/)(\d+)(\.webp)", key)
+        if not match:
+            raise ValueError(f"Định dạng key không hợp lệ: {key}")
+        prefix, frame_str, _ext = match.groups()
+        return prefix, int(frame_str)
 
 
 # ==========================================

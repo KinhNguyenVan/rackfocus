@@ -109,6 +109,7 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [framesOpen, setFramesOpen] = useState(false);
   const [neighborFrames, setNeighborFrames] = useState<NeighborFrame[]>([]);
   const [neighborVideo, setNeighborVideo] = useState("");
+  const [framesLabel, setFramesLabel] = useState("");
   const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [neighborsError, setNeighborsError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState({
@@ -119,18 +120,34 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     targetVideo: "",
   });
 
-  const loadNeighbors = (url: string, video: string) => {
+  const loadFrames = (
+    video: string,
+    fromUrl: string,
+    before: number,
+    after: number,
+    toUrl?: string,
+  ) => {
     setFramesOpen(true);
     setNeighborVideo(video);
+    setFramesLabel(toUrl ? `${before} trước · giữa 2 sự kiện · ${after} sau` : `${before} trước/sau`);
     setNeighborsLoading(true);
     setNeighborsError(null);
-    fetchNeighbors(url, 25, 25)
+    fetchNeighbors(fromUrl, before, after, toUrl)
       .then((data) => setNeighborFrames(data.frames ?? []))
       .catch((cause: unknown) => {
         setNeighborFrames([]);
         setNeighborsError(cause instanceof Error ? cause.message : "Load frames failed");
       })
       .finally(() => setNeighborsLoading(false));
+  };
+
+  const loadNeighbors = (url: string, video: string) => loadFrames(video, url, 25, 25);
+
+  // "Xem frames giữa" trên TemporalChainCard: 5 khung trước sự kiện 1, tất cả khung
+  // giữa 2 sự kiện, 5 khung sau sự kiện 2 -- cả 2 hit luôn cùng video (TemporalChain).
+  const loadChainFrames = (chain: TemporalChain) => {
+    const [hit1, hit2] = chain.hits;
+    loadFrames(chain.video_name, hit1.keyframe_url, 5, 5, hit2.keyframe_url);
   };
 
   // Frame lân cận chỉ có url+frame (list S3, không đi qua snapshot) -- không có
@@ -711,7 +728,12 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         <p className="text-muted small">{temporalWarnings.join(", ")}</p>
                       )}
                       {chains.map((chain, i) => (
-                        <TemporalChainCard key={i} chain={chain} onUseChain={useChain} />
+                        <TemporalChainCard
+                          key={i}
+                          chain={chain}
+                          onUseChain={useChain}
+                          onViewFrames={loadChainFrames}
+                        />
                       ))}
                       {temporalTotalMs !== null && (
                         <small className="text-muted d-block mt-3">
@@ -828,9 +850,10 @@ function SearchPage({ goSubmission }: { goSubmission: () => void }) {
           >
             <div className="d-flex justify-content-between align-items-center border-bottom mb-2">
               <h6 className="mb-0">
-                Frames (25 trước/sau) {neighborVideo && `— ${neighborVideo}`}
+                Frames {neighborVideo && `— ${neighborVideo}`}
               </h6>
             </div>
+            {framesLabel && <span className="badge text-bg-primary mb-2">{framesLabel}</span>}
             {neighborsLoading && (
               <div className="text-center my-3">
                 <div className="spinner-border spinner-border-sm text-primary" role="status">
