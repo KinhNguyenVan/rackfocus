@@ -5,3 +5,12 @@ grpcio-tools
 protobuf
 onnxruntime
 pydantic-settings
+# Runtime-only (SC_STUB_MODE=0): snapshot.py reads payload.parquet; base.py falls back to
+# boto3 to pull SNAPSHOT_S3/ENCODER_S3 when ingest.storage isn't importable.
+pyarrow
+boto3
+# text.py prefers the lightweight `tokenizers` (Rust) tokenizer when the bundle ships
+# tokenizer.json; the current SigLIP text bundle on S3 ships spiece.model instead, which
+# needs AutoTokenizer -> transformers + sentencepiece.
+transformers
+sentencepiece
