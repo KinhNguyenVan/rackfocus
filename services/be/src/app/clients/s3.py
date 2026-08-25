@@ -324,38 +324,68 @@ class AWSStorageHelper:
             return None
 
     def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25) -> list:
-        """Tìm N khung hình trước và N khung hình sau một frame hiện tại (Dành cho AIC Keyframes)."""
+        """Tìm keyframe lân cận mà không list toàn bộ thư mục video.
+
+        Key S3 được zero-pad theo frame nên thứ tự lexicographic cũng là thứ tự frame.
+        Nhánh cũ paginate toàn bộ một video (hàng chục nghìn object) cho mỗi click; trên
+        bucket thật việc đó mất hơn hai phút. Ở đây nhánh sau dùng ``StartAfter`` trực
+        tiếp, còn nhánh trước mở rộng một cửa sổ số frame tới khi đủ kết quả.
+
+        Trả cả frame hiện tại để UI đặt nó ở giữa và đánh dấu rõ ràng.
+        """
         match = re.match(r"(.*/)(\d+)(\.webp)", current_key)
         if not match:
             raise ValueError(f"Định dạng key không hợp lệ: {current_key}")
 
-        prefix, current_frame_str, _ext = match.groups()
+        prefix, current_frame_str, ext = match.groups()
         current_frame_num = int(current_frame_str)
+        width = len(current_frame_str)
 
-        paginator = self.s3_client.get_paginator("list_objects_v2")
-        all_keys = []
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-            if "Contents" in page:
-                for obj in page["Contents"]:
-                    key = obj["Key"]
-                    m = re.match(r".*/(\d+)\.webp$", key)
-                    if m:
-                        frame_num = int(m.group(1))
-                        all_keys.append((frame_num, key))
+        def entries(response) -> list[tuple[int, str]]:
+            found = []
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                item = re.fullmatch(r".*/(\d+)\.webp", key)
+                if item:
+                    found.append((int(item.group(1)), key))
+            return found
 
-        if not all_keys:
-            return []
+        previous: list[tuple[int, str]] = []
+        if before:
+            # 8x đủ cho sampling thưa thông thường; tăng dần nếu video thưa hơn.
+            span = max(128, before * 8)
+            for _ in range(8):
+                anchor = max(0, current_frame_num - span)
+                start_after = prefix if anchor == 0 else (
+                    f"{prefix}{anchor:0{width}d}{ext}"
+                )
+                response = self.s3_client.list_objects_v2(
+                    Bucket=self.bucket,
+                    Prefix=prefix,
+                    StartAfter=start_after,
+                    MaxKeys=1000,
+                )
+                candidates = [x for x in entries(response) if x[0] < current_frame_num]
+                previous = candidates[-before:]
+                if len(previous) >= before or anchor == 0:
+                    break
+                span *= 4
 
-        all_keys.sort(key=lambda x: x[0])
-        index = next((i for i, (num, _) in enumerate(all_keys) if num == current_frame_num), None)
+        following: list[tuple[int, str]] = []
+        if after:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket,
+                Prefix=prefix,
+                StartAfter=current_key,
+                MaxKeys=max(after, 1),
+            )
+            following = entries(response)[:after]
 
-        if index is None:
-            raise ValueError("Không tìm thấy frame hiện tại trong danh sách S3")
-
-        start = max(0, index - before)
-        end = min(len(all_keys), index + after + 1)
-
-        return [k for _, k in all_keys[start:end] if k != current_key]
+        return [key for _frame, key in (
+            previous
+            + [(current_frame_num, current_key)]
+            + following
+        )]
 
 
 # ==========================================
