@@ -171,7 +171,7 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
           <div className="mt-3 flex gap-2">
             <button
               onClick={() => mockLogin()}
-                className="bg-gray-600 text-white font-semibold py-2 px-4 rounded hover:bg-gray-700 transition"
+              className="bg-gray-600 text-white font-semibold py-2 px-4 rounded hover:bg-gray-700 transition"
             >
               Mock Login
             </button>
@@ -180,13 +180,13 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
                 setSession(null);
                 setEvaluation("");
               }}
-                className="bg-red-600 text-white font-semibold py-2 px-4 rounded hover:bg-red-700 transition"
+              className="bg-red-600 text-white font-semibold py-2 px-4 rounded hover:bg-red-700 transition"
             >
               Logout
             </button>
             <button
               onClick={clearPrepared}
-                className="bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded hover:bg-gray-300 transition"
+              className="bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded hover:bg-gray-300 transition"
             >
               Clear Prepared Body
             </button>
@@ -232,7 +232,10 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
                     checked={usePrepared}
                     onChange={(event) => fillPrepared(event.target.checked)}
                   />
-                  <label htmlFor="use-prepared-body" className="text-sm text-yellow-800">
+                  <label
+                    htmlFor="use-prepared-body"
+                    className="text-sm text-yellow-800"
+                  >
                     Use prepared body (được gửi từ trang tìm kiếm)
                   </label>
                 </div>
