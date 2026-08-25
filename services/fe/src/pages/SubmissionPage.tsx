@@ -109,16 +109,18 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
     setValue: (value: string) => void,
     type = "text",
   ) => (
-    <label className="block text-sm font-medium text-gray-700">
-      {label}
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">
+        {label}
+      </label>
       <input
         type={type}
-        className="w-full p-3 border border-gray-300 rounded-lg font-mono text-sm"
+        className="w-full p-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-blue-500"
         value={value}
         onChange={(event) => setValue(event.target.value)}
         required
       />
-    </label>
+    </div>
   );
   return (
     <div className="bg-gray-100 font-sans min-h-screen flex items-center justify-center p-4">
@@ -129,7 +131,7 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
           </h1>
           <button
             onClick={goSearch}
-            className="px-4 py-2 rounded-lg border border-gray-300"
+            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
           >
             ← Quay về trang tìm kiếm
           </button>
@@ -140,7 +142,7 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
             <label className="block text-sm font-medium">
               API Base URL
               <input
-                className="w-full p-3 border rounded-lg"
+                className="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500"
                 value="https://eventretrieval.oj.io.vn/api/v2"
                 readOnly
               />
@@ -148,7 +150,7 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
             <label className="block text-sm font-medium">
               Username
               <input
-                className="w-full p-3 border rounded-lg"
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 placeholder="Your team's username"
                 required
               />
@@ -157,19 +159,19 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
               Password
               <input
                 type="password"
-                className="w-full p-3 border rounded-lg"
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 placeholder="Your team's password"
                 required
               />
             </label>
-            <button className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg">
+            <button className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 transition duration-300 shadow-lg">
               Login & Fetch Evaluation
             </button>
           </form>
           <div className="mt-3 flex gap-2">
             <button
               onClick={() => mockLogin()}
-              className="bg-gray-600 text-white py-2 px-4 rounded"
+                className="bg-gray-600 text-white font-semibold py-2 px-4 rounded hover:bg-gray-700 transition"
             >
               Mock Login
             </button>
@@ -178,25 +180,28 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
                 setSession(null);
                 setEvaluation("");
               }}
-              className="bg-red-600 text-white py-2 px-4 rounded"
+                className="bg-red-600 text-white font-semibold py-2 px-4 rounded hover:bg-red-700 transition"
             >
               Logout
             </button>
             <button
               onClick={clearPrepared}
-              className="bg-gray-200 py-2 px-4 rounded"
+                className="bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded hover:bg-gray-300 transition"
             >
               Clear Prepared Body
             </button>
           </div>
           {status.text && (
-            <p
-              className={
-                status.type === "error" ? "text-red-600" : "text-green-600"
-              }
+            <div
+              className={`mt-4 font-semibold ${status.type === "error" ? "text-red-600" : "text-green-600"}`}
             >
+              {status.type === "error" ? (
+                <strong>Error:</strong>
+              ) : (
+                <strong>Success:</strong>
+              )}{" "}
               {status.text}
-            </p>
+            </div>
           )}
         </section>
         {session && (
@@ -218,26 +223,33 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
               Step 3: Submit Answer
             </h2>
             <form onSubmit={submit} className="space-y-4">
-              <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
-                <label>
+              <div className="bg-yellow-50 border border-yellow-200 rounded p-3 space-y-2">
+                <div className="flex items-center gap-2">
                   <input
+                    id="use-prepared-body"
                     type="checkbox"
+                    className="h-4 w-4"
                     checked={usePrepared}
                     onChange={(event) => fillPrepared(event.target.checked)}
-                  />{" "}
-                  Use prepared body
+                  />
+                  <label htmlFor="use-prepared-body" className="text-sm text-yellow-800">
+                    Use prepared body (được gửi từ trang tìm kiếm)
+                  </label>
+                </div>
+                <label className="block text-sm font-medium text-yellow-900">
+                  Prepared Body
                 </label>
                 <textarea
-                  className="w-full p-2 border rounded font-mono text-xs mt-2"
+                  className="w-full p-2 border border-yellow-200 rounded font-mono text-xs"
                   rows={6}
                   value={prepared}
                   readOnly
                 />
               </div>
-              <label className="block text-sm font-medium">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
                 Submission Type
                 <select
-                  className="w-full p-3 border rounded-lg"
+                  className="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500"
                   value={task}
                   onChange={(event) => setTask(event.target.value as Task)}
                 >
@@ -268,16 +280,30 @@ export default function SubmissionPage({ goSearch }: { goSearch: () => void }) {
                   {field("List Frame IDs (comma-separated)", frames, setFrames)}
                 </div>
               )}
-              <button className="w-full bg-green-600 text-white font-bold py-3 rounded-lg">
+              <button className="w-full bg-green-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg">
                 Submit Answer
               </button>
             </form>
             {response && (
-              <pre className="bg-gray-900 text-white text-sm p-4 rounded-lg mt-6 overflow-x-auto">
-                {response.code}
-                {"\n"}
-                {response.body}
-              </pre>
+              <div className="mt-6 space-y-4">
+                <h3 className="text-xl font-semibold text-gray-800">
+                  Submission Response
+                </h3>
+                <div>
+                  <h4 className="font-medium text-gray-700">Status:</h4>
+                  <div
+                    className={`mt-1 px-4 py-2 bg-gray-100 rounded-lg font-mono font-bold ${response.ok ? "text-green-600" : "text-red-600"}`}
+                  >
+                    {response.code}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-medium text-gray-700">Body:</h4>
+                  <pre className="bg-gray-900 text-white text-sm p-4 rounded-lg overflow-x-auto max-h-80">
+                    <code>{response.body}</code>
+                  </pre>
+                </div>
+              </div>
             )}
           </section>
         )}

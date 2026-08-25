@@ -36,11 +36,9 @@ export default function SearchPage({
     () =>
       hits.map((hit) => ({
         ...hit,
-        video: `scene_${hit.scene_id}`,
-        frame: (hit.rank + 1) * 1000,
-        url:
-          hit.url ??
-          `https://placehold.co/640x360/e9eef0/354d58?text=scene+${hit.scene_id}`,
+        video: hit.video_name,
+        frame: hit.frame,
+        url: hit.keyframe_url,
       })),
     [hits],
   );
@@ -76,8 +74,8 @@ export default function SearchPage({
 
   const toggle = (result: Result) =>
     setSelected((items) =>
-      items.some((item) => item.scene_id === result.scene_id)
-        ? items.filter((item) => item.scene_id !== result.scene_id)
+      items.some((item) => item.point_id === result.point_id)
+        ? items.filter((item) => item.point_id !== result.point_id)
         : [...items, result],
     );
   const search = (event: FormEvent) => {
@@ -187,27 +185,32 @@ export default function SearchPage({
         style={{ width: "200px", overflowY: "auto", zIndex: 1040 }}
       >
         <h6>Selected</h6>
-        {selected.map((item, index) => (
-          <div className="card mb-2" key={item.scene_id}>
-            <img
-              src={item.url}
-              className="card-img-top"
-              style={{ height: "60px", objectFit: "cover" }}
-              alt="selected"
-            />
-            <div className="card-body p-1 text-center">
-              <input
-                type="checkbox"
-                checked
-                readOnly
-                onClick={() => toggle(item)}
-              />{" "}
-              <small>
-                {index + 1}. scene_{item.scene_id}
-              </small>
+        <div id="selectedList" className="row row-cols-1 g-2">
+          {selected.map((item, index) => (
+            <div className="col" key={item.point_id}>
+              <div className="card">
+                <img
+                  src={item.url}
+                  className="card-img-top"
+                  style={{ height: "60px", objectFit: "cover" }}
+                  alt="selected"
+                />
+                <div className="card-body p-1 text-center">
+                  <input
+                    type="checkbox"
+                    className="form-check-input selectedSidebarCb me-1"
+                    checked
+                    readOnly
+                    onClick={() => toggle(item)}
+                  />
+                  <small>
+                    {index + 1}. {item.video} / {item.scene_idx}
+                  </small>
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </aside>
       {contextMenu.visible && (
         <div
@@ -243,7 +246,7 @@ export default function SearchPage({
         className="flex-grow-1"
         style={{
           marginLeft: "200px",
-          marginRight: framesOpen ? "400px" : "40px",
+          zIndex: 1,
         }}
       >
         <nav className="navbar bg-body-tertiary mb-3">
@@ -269,7 +272,7 @@ export default function SearchPage({
             <section className="col-12 col-md-6">
               <div className="card h-100 shadow-sm">
                 <div className="card-body">
-                  <h5>
+                  <h5 className="card-title">
                     <i className="bi bi-image" /> Image Search
                   </h5>
                   <form onSubmit={search}>
@@ -295,37 +298,45 @@ export default function SearchPage({
                         <option value="caption">Caption</option>
                         <option value="ocr">OCR</option>
                       </select>
-                      <button className="btn btn-outline-secondary">⌕</button>
                       <button
-                        className="btn btn-outline-danger"
+                        className="btn btn-outline-secondary"
+                        type="submit"
+                      >
+                        <i className="bi bi-mic"></i>
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline-danger ms-2"
                         type="button"
                         onClick={clear}
+                        title="Clear saved search state"
                       >
                         Clear
                       </button>
                     </div>
                   </form>
-                  <label className="form-label small fw-semibold">
-                    Topics:
-                  </label>
-                  <div className="d-flex flex-wrap gap-2">
-                    {topics.map((topic) => (
-                      <label className="form-check small" key={topic}>
-                        <input
-                          className="form-check-input"
-                          type="checkbox"
-                          checked={chosenTopics.includes(topic)}
-                          onChange={() =>
-                            setChosenTopics((items) =>
-                              items.includes(topic)
-                                ? items.filter((item) => item !== topic)
-                                : [...items, topic],
-                            )
-                          }
-                        />{" "}
-                        {topic}
-                      </label>
-                    ))}
+                  <div className="mb-3">
+                    <label className="form-label small fw-semibold">
+                      Topics:
+                    </label>
+                    <div className="d-flex flex-wrap gap-2">
+                      {topics.map((topic) => (
+                        <label className="form-check small" key={topic}>
+                          <input
+                            className="form-check-input topic-checkbox"
+                            type="checkbox"
+                            checked={chosenTopics.includes(topic)}
+                            onChange={() =>
+                              setChosenTopics((items) =>
+                                items.includes(topic)
+                                  ? items.filter((item) => item !== topic)
+                                  : [...items, topic],
+                              )
+                            }
+                          />{" "}
+                          {topic === "tin tức" ? "Tin tức" : topic}
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -333,7 +344,7 @@ export default function SearchPage({
             <section className="col-12 col-md-6">
               <div className="card h-100 shadow-sm">
                 <div className="card-body">
-                  <h5>
+                  <h5 className="card-title">
                     <i className="bi bi-ui-checks" /> Xuất thông báo kết quả
                   </h5>
                   <label className="form-label">Kiểu câu hỏi</label>
@@ -374,7 +385,7 @@ export default function SearchPage({
           </div>
           <section className="card mt-3 mb-4">
             <div className="card-body">
-              <h5>
+              <h5 className="card-title">
                 <i className="bi bi-database" /> Images results
               </h5>
               {loading && (
@@ -384,10 +395,10 @@ export default function SearchPage({
               <div className="row row-cols-2 row-cols-sm-3 row-cols-md-5 g-2">
                 {results.map((result) => {
                   const selectedIndex = selected.findIndex(
-                    (item) => item.scene_id === result.scene_id,
+                    (item) => item.point_id === result.point_id,
                   );
                   return (
-                    <div className="col p-2 text-center" key={result.scene_id}>
+                    <div className="col p-2 text-center" key={result.point_id}>
                       <div className="card position-relative">
                         <img
                           src={result.url}
@@ -409,7 +420,9 @@ export default function SearchPage({
                             checked={selectedIndex >= 0}
                             onChange={() => toggle(result)}
                           />{" "}
-                          <small>scene_{result.scene_id}</small>
+                          <small>
+                            {result.video} / {result.scene_idx}
+                          </small>
                         </div>
                         {selectedIndex >= 0 && (
                           <span className="badge bg-primary position-absolute top-0 start-0 m-1">
@@ -433,23 +446,43 @@ export default function SearchPage({
       <aside
         id="frameSidebar"
         className="position-fixed top-0 end-0 bg-light shadow h-100"
-        style={{ width: framesOpen ? "400px" : "40px", zIndex: 1050 }}
+        style={{
+          width: framesOpen ? "400px" : "40px",
+          transition: "0.3s",
+          zIndex: 1050,
+        }}
       >
-        <button
-          className="btn btn-sm btn-outline-secondary m-1"
+        <div
+          className="d-flex justify-content-center align-items-center h-100 border-start"
+          style={{ width: "40px", float: "left", cursor: "pointer" }}
           onClick={() => setFramesOpen(!framesOpen)}
         >
-          {framesOpen ? "»" : "«"}
-        </button>
+          <button className="btn btn-sm btn-outline-secondary">
+            {framesOpen ? "»" : "«"}
+          </button>
+        </div>
         {framesOpen && (
-          <div className="p-2">
-            <h6>Frames</h6>
-            <div className="alert alert-warning small">
+          <div
+            id="sidebarContent"
+            style={{
+              width: "360px",
+              float: "left",
+              padding: "10px",
+              height: "100%",
+              overflowY: "auto",
+              display: "block",
+            }}
+          >
+            <div className="d-flex justify-content-between align-items-center border-bottom mb-2">
+              <h6 className="mb-0">Frames</h6>
+            </div>
+            <div className="alert alert-warning p-2 small">
               Mock: /frames?url=... chưa nối BE.
             </div>
           </div>
         )}
       </aside>
+      <div className="footer">&copy; 2025 Galaxy AI</div>
     </div>
   );
 }

@@ -1,25 +1,7 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { SearchHit } from "./api/types";
-import { useSearch } from "./hooks/useSearch";
+import { useEffect, useState } from "react";
+import SearchPage from "./pages/SearchPage";
+import SubmissionPage from "./pages/SubmissionPage";
 import "./styles/global.css";
-
-type Task = "kis" | "qa" | "trake";
-// SearchHit đã có video_name/frame/keyframe_url thật (services/be/src/app/api/search.py)
-// -- url/video là alias tiện dùng trong UI, point_id là khoá duy nhất thật (không có
-// scene_id toàn cục nào cả, scene_idx chỉ là index trong 1 video).
-type Result = SearchHit & {
-  url: string;
-  video: string;
-};
-const topics = [
-  "tin tức",
-  "Tin tức+múa lân",
-  "Tin tức+xe đạp",
-  "Tin tức+dạy học online",
-  "Tin tức+chương trình nấu ăn",
-];
 
 export default function App() {
   const [route, setRoute] = useState(window.location.pathname);
