@@ -4,14 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-command -v python3 >/dev/null || { echo "Cần python3"; exit 1; }
-python3 -c "import grpc_tools" 2>/dev/null || {
+# python3 trên Linux/CI; Windows (native, không docker) chỉ có `python`.
+PYTHON="$(command -v python3 || command -v python || true)"
+[ -n "$PYTHON" ] || { echo "Cần python3 hoặc python"; exit 1; }
+"$PYTHON" -c "import grpc_tools" 2>/dev/null || {
   echo "Thiếu grpcio-tools. Chạy: pip install grpcio-tools"; exit 1; }
 
 for OUT in services/core/src/searchcore/pb services/be/src/app/pb; do
   rm -rf "$OUT"; mkdir -p "$OUT"
 
-  python3 -m grpc_tools.protoc \
+  "$PYTHON" -m grpc_tools.protoc \
     -I proto \
     --python_out="$OUT" \
     --grpc_python_out="$OUT" \

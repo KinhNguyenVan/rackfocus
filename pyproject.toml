@@ -9,6 +9,45 @@ authors = [
 requires-python = ">=3.11"
 dependencies = []
 
+# Mirrors of services/{core,be}/requirements.txt (used by their Dockerfiles/CI directly).
+# For native (no-docker) dev, `uv sync --extra core --extra be` installs both into this
+# one venv. Keep in sync by hand if either requirements.txt changes.
+[project.optional-dependencies]
+core = [
+    "faiss-cpu",
+    "numpy",
+    "grpcio",
+    "grpcio-tools",
+    "protobuf",
+    "onnxruntime",
+    "pydantic-settings",
+    "pyarrow",
+    "boto3",
+    "transformers",
+    "sentencepiece",
+]
+be = [
+    "fastapi",
+    "uvicorn[standard]",
+    "grpcio",
+    "protobuf",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    "alembic",
+    "redis",
+    "msgpack",
+    "boto3",
+    "httpx",
+    "litellm",
+    "pydantic-settings",
+    "requests",
+    "tqdm",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
 [project.scripts]
 rackfocus = "rackfocus:main"
 
