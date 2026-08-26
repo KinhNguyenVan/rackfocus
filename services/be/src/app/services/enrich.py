@@ -42,11 +42,31 @@ Quy tắc:
 - Chọn tối đa {max_tags} lĩnh vực.
 - Truy vấn không gắn với lĩnh vực rõ ràng (ví dụ chỉ tả màu sắc, hành động chung) thì trả
   danh sách rỗng — hệ thống sẽ tìm toàn bộ kho.
-- "enriched" viết bằng tiếng Anh, NHƯNG tên riêng tiếng Việt (địa danh, di tích, tổ chức,
-  sự kiện, nhân vật) giữ NGUYÊN dạng tiếng Việt, KHÔNG dịch — ví dụ "Chùa Một Cột" phải
-  giữ nguyên "Chùa Một Cột" trong câu tiếng Anh, không thành "One Pillar Pagoda".
+Về "enriched" — đây là mô tả để KHỚP HÌNH ẢNH, không phải câu văn hay:
+- BẮT BUỘC viết bằng tiếng Anh.
+- Chỉ giữ những HÀNH ĐỘNG và SỰ VẬT THẬT SỰ NHÌN THẤY ĐƯỢC mà truy vấn nói tới. Bỏ hết
+  phần không nhìn thấy được: kiến thức nền, lịch sử, đánh giá, cảm xúc, mục đích, tên
+  quốc gia/thời kỳ nếu truy vấn không nêu.
+- KHÔNG thêm chi tiết truy vấn không có. Không suy diễn bối cảnh, không đoán thêm vật thể,
+  không tô vẽ. Truy vấn ngắn thì "enriched" cũng ngắn — chỉ dịch, không nối thêm.
+  Ví dụ SAI  : "chùa một cột" -> "Chùa Một Cột, a historic pagoda in Vietnam"
+               ("historic", "in Vietnam" là kiến thức thêm, không nhìn thấy được)
+  Ví dụ ĐÚNG : "chùa một cột" -> "Chùa Một Cột"
+  Ví dụ ĐÚNG : "cầu thủ bóng đá ăn mừng" -> "football player celebrating"
+- BỎ từ chỉ đánh giá, cảm xúc, cảm nhận KỂ CẢ KHI truy vấn có chúng — chúng không phải
+  vật thể hay hành động nhìn thấy được ("hùng vĩ", "tuyệt đẹp", "choáng ngợp", "nổi
+  tiếng", "quan trọng", "đáng chú ý"...).
+  Ví dụ SAI  : "cảnh hùng vĩ của vịnh Hạ Long khiến du khách choáng ngợp"
+               -> "majestic view of Ha Long Bay, tourists amazed"
+  Ví dụ ĐÚNG : "cảnh hùng vĩ của vịnh Hạ Long khiến du khách choáng ngợp"
+               -> "Vịnh Hạ Long, tourists"
+- Tên riêng tiếng Việt (địa danh, di tích, tổ chức, sự kiện, nhân vật) giữ NGUYÊN dạng
+  tiếng Việt, ĐỦ DẤU, KHÔNG dịch và KHÔNG đổi trật tự từ:
+    "Chùa Một Cột" -> "Chùa Một Cột"      (không phải "One Pillar Pagoda")
+    "vịnh Hạ Long" -> "Vịnh Hạ Long"      (không phải "Ha Long Bay" hay "Ha Long")
+    "phố cổ Hội An" -> "Phố Cổ Hội An"    (không phải "Hoi An ancient town")
 - Chỉ trả JSON, không giải thích:
-  {{"tags": [<id>, ...], "enriched": "<câu truy vấn viết rõ hơn bằng tiếng Anh, tên riêng tiếng Việt giữ nguyên>"}}"""
+  {{"tags": [<id>, ...], "enriched": "<hành động/sự vật nhìn thấy được, bằng tiếng Anh, tên riêng tiếng Việt giữ nguyên>"}}"""
 
 
 @dataclass
@@ -124,15 +144,27 @@ async def enrich(query: str, vocab: dict[int, TagInfo], settings) -> Enrichment:
     try:
         import litellm
 
+        # reasoning_effort chỉ gửi khi có khai: model không phải reasoning sẽ lỗi nếu nhận.
+        extra = ({"reasoning_effort": settings.llm_reasoning_effort}
+                 if settings.llm_reasoning_effort else {})
         resp = await litellm.acompletion(
             model=settings.llm_model,
             messages=build_prompt(query, vocab, settings.llm_max_tags),
             api_key=settings.llm_api_key or None,
             temperature=settings.llm_temperature,
             timeout=settings.llm_timeout_s,
-            max_tokens=400,
+            max_tokens=settings.llm_max_tokens,
+            **extra,
         )
-        content = resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        content = choice.message.content or ""
+        # finish_reason vào thông báo lỗi: khi model reasoning tiêu hết max_tokens thì
+        # content rỗng/JSON cụt, và nếu không thấy "length" ở đây thì rất khó đoán ra.
+        if not content.strip():
+            raise ValueError(
+                f"LLM trả content rỗng (finish_reason={choice.finish_reason}, "
+                f"completion_tokens={getattr(resp.usage, 'completion_tokens', '?')}) — "
+                "nếu là 'length' thì tăng LLM_MAX_TOKENS hoặc hạ LLM_REASONING_EFFORT")
         tags, enriched = _parse(content, set(vocab), settings.llm_max_tags)
         return Enrichment(tags=tags, enriched_text=enriched or query,
                           model=settings.llm_model,

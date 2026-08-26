@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_tags: int = 5
 
+    # ĐỪNG hạ về 400 (giá trị cũ). Model reasoning (gpt-oss-120b...) tiêu token cho
+    # reasoning TRƯỚC khi sinh content: query dài đo được 1437 ký tự reasoning + 408
+    # completion token. 400 làm finish_reason=length -> JSON bị cắt giữa chuỗi (có lúc
+    # content rỗng hẳn) -> _parse raise "không thấy JSON" -> enrich tắt trong im lặng,
+    # và chỉ tắt với query DÀI nên rất dễ tưởng là lỗi ngẫu nhiên.
+    llm_max_tokens: int = 2000
+
+    # "low"/"medium"/"high", rỗng = không gửi tham số (model không reasoning sẽ lỗi nếu
+    # nhận). "low" đo được: 408 -> 167 completion token mà JSON vẫn đúng.
+    llm_reasoning_effort: str = ""
+
     # Bật/tắt LLM cho từng request được (giữ cờ use_llm của Handoff §4.2) — khi LLM chọn
     # sai tag thì đây là đường lùi duy nhất của người dùng.
     llm_enabled: bool = True
