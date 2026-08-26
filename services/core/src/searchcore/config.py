@@ -39,7 +39,21 @@ class Config:
     # ef_search KHÔNG nhận per-request: chỉ áp được bằng cách gán
     # index.hnsw.efSearch, tức mutable state trên object dùng chung mọi thread.
     # Xem docs/search-design.md §7.
-    ef_search: int = _int("FAISS_EF_SEARCH", 64)
+    # 64 là con số cho search KHÔNG lọc. Với filtered search (HNSW + IDSelector) nó làm
+    # LỌC TAG TẮT HẲN mà không báo lỗi: HNSW chỉ thăm ~ef_search node rồi mới lọc, nên
+    # với tỉ lệ nhận ~6-10% thì trả về ~4-6 kết quả. search_with_fallback thấy
+    # rows < top_k liền rơi về full corpus và xoá tags_used -> mọi tag đi đường `pre`
+    # (bucket > EXACT_SUBSET_MAX) đều vô hiệu, chỉ để lại warning "tag_fallback".
+    # Đo trên corpus thật 613k/13 tag, top_k=300, rerank_candidates=1000 (overlap@300
+    # lấy ef=10000 làm mốc, 18 case x 6 query):
+    #   ef=2000  core p50  40-71ms | recall tag 69-79% | 1/18 case tag_fallback
+    #   ef=4000  core p50  89-94ms | recall tag 82-84% | 1/18 case tag_fallback
+    #   ef=10000 core p50 195-219ms| recall tag  (mốc) | 0/120 query fallback
+    # Chọn 10000: search KHÔNG tag gần như miễn nhiễm với ef (recall 99,6-100% ở mọi
+    # mức) nhưng search CÓ tag thì tụt mạnh, và phần chênh 100ms là không đáng kể so
+    # với LLM enrich ở BE (400-3700ms) — tức người dùng không cảm nhận được, trong khi
+    # mất 20% recall thì có. Nâng top_k hoặc hạ EXACT_SUBSET_MAX thì phải đo lại.
+    ef_search: int = _int("FAISS_EF_SEARCH", 10_000)
     rerank_candidates: int = _int("RERANK_CANDIDATES", 800)
 
     # Ngưỡng DUY NHẤT chọn EXACT_SUBSET vs 2-tier. Đo được ở dim=1152: 8.5k candidate

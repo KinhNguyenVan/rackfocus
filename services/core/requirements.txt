@@ -5,3 +5,20 @@ grpcio-tools
 protobuf
 onnxruntime
 pydantic-settings
+
+# snapshot.py::_load_files import lazy để đọc payload parquet.
+pyarrow
+
+# encoder/base.py::resolve_bundle tải bundle từ ENCODER_S3/SNAPSHOT_S3. Thử
+# ingest.storage.download_dir trước, không import được thì tự tải bằng boto3.
+boto3
+
+# encoder/text.py::_load_tokenizer ưu tiên `tokenizers` (Rust, nhẹ) khi bundle có
+# tokenizer.json, nếu không thì rơi xuống transformers.AutoTokenizer.
+# Bundle trên S3 hiện CHƯA có tokenizer.json (chỉ model.onnx + spiece.model +
+# tokenizer_config.json) nên nhánh transformers là nhánh chạy thật -> phải khai cả hai.
+# Thêm tokenizer.json vào bundle thì bỏ được transformers+sentencepiece (~1GB), đúng
+# chủ trương "core chỉ ONNX".
+tokenizers
+transformers
+sentencepiece
