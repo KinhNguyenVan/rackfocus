@@ -106,7 +106,16 @@ class FakeEncoder:
 
 @pytest.fixture
 def llm():
-    """Mock litellm. `llm.reply` để đổi hành vi, `llm.calls` để đếm."""
+    """Mock litellm. `llm.reply` để đổi hành vi, `llm.calls` để đếm.
+
+    `reply` không khai "confidence" thì mock tự điền 1.0, tức "LLM rất tự tin" — để test
+    KHÔNG nói về confidence giữ nguyên ý định của nó. Muốn test cổng confidence thì khai
+    thẳng `{"confidence": 0.4, ...}`.
+
+    Lưu ý: đây CHỈ là mặc định của mock. Hợp đồng thật ngược lại — model không khai
+    confidence thì coi như 0.0 (không tin), xem `enrich._confidence` và
+    test_taxonomy.py::test_confidence_thieu_hoac_rac_thi_coi_nhu_khong_tin.
+    """
     state = types.SimpleNamespace(calls=0, last_prompt=None, reply=None, raises=None)
 
     async def acompletion(**kwargs):
@@ -114,7 +123,8 @@ def llm():
         state.last_prompt = kwargs["messages"][1]["content"]
         if state.raises:
             raise state.raises
-        payload = state.reply if state.reply is not None else {"tags": [], "enriched": ""}
+        payload = dict(state.reply) if state.reply is not None else {"tags": [], "enriched": ""}
+        payload.setdefault("confidence", 1.0)
         msg = types.SimpleNamespace(content=json.dumps(payload))
         return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
 

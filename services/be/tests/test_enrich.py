@@ -26,7 +26,8 @@ def settings(**overrides):
     # llm_max_tokens/llm_reasoning_effort.
     base = dict(llm_enabled=True, llm_model="groq/llama-3.3-70b-versatile",
                llm_api_key="", llm_temperature=0.0, llm_timeout_s=6.0, llm_max_tags=5,
-               llm_max_tokens=2000, llm_reasoning_effort="")
+               llm_max_tokens=2000, llm_reasoning_effort="",
+               llm_tag_confidence_min=0.75)
     base.update(overrides)
     return SimpleNamespace(**base)
 

@@ -1,15 +1,16 @@
-"""POST /api/search — LLM chọn tag SONG SONG với encode query.
+"""POST /api/search — LLM chọn tag + viết lại query, rồi encode BẢN VIẾT LẠI.
 
-Xem docs/search-design.md §3. Điểm cốt lõi: `asyncio.gather` chứ không await tuần tự.
-LLM 80-300ms và encode 170-420ms chạy chồng nhau -> tổng là max, không phải tổng cộng.
+docs/search-design.md §3 mô tả LLM chạy song song với encode (`asyncio.gather`, tổng =
+max thay vì cộng). Thiết kế đó KHÔNG còn đúng: encode phải chờ LLM vì nó cần chính bản
+`enriched` để embedding. Lý do đo được ghi ở comment trong `search()`.
 
 Response trả lại `tags_used` + `candidate_count` + `strategy`: lọc tag là CỨNG, frame mang
 tag không được chọn là không thể với tới. Không phơi ra thì user nhận một trang kết quả
-trông rất tự tin từ 1/8 corpus không chứa đáp án mà không có cách nào biết.
+trông rất tự tin từ 1/8 corpus không chứa đáp án mà không có cách nào biết. Cùng lý do,
+`enrichment.encoded_text` phơi ra chữ THỰC SỰ được encode.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
@@ -84,21 +85,33 @@ async def search(req: SearchRequest) -> SearchResponse:
 
     vocab, snap_ver = await tagvocab.get(st)
 
-    # ── Điểm mấu chốt: encode và LLM chạy SONG SONG ─────────────────
-    # Encode QUERY GỐC của user, không phải bản LLM viết lại: giữ đúng cách diễn đạt,
-    # và không phải chờ LLM xong mới bắt đầu encode.
-    async def _encode():
-        return await searchcore.encode(req.text, request_id=rid,
-                                      timeout=st.encode_timeout_s)
-
-    async def _enrich():
-        if req.tags is not None or not req.use_llm:
-            return enrich_svc.Enrichment(enriched_text=req.text)
-        return await enrich_svc.enrich(req.text, vocab, st)
+    # ── Encode bản "enriched" tiếng Anh, KHÔNG phải query gốc ────────
+    # Trước đây encode query gốc để chạy SONG SONG với LLM (tổng = max thay vì cộng).
+    # Nhưng tokenizer SigLIP tốn 4-7,5x token cho tiếng Việt và giới hạn 64 token là
+    # CỨNG (position_embedding [64, 1152]), nên query tiếng Việt dài bị cắt âm thầm và
+    # mất đúng phần chi tiết phân biệt ở cuối câu.
+    #
+    # Đo trên câu 194 token ("nhóm hơn 5 người tập thể dục... một người đeo kính, ba
+    # người đội nón đỏ"): encode query gốc -> video đích 0/300 frame; encode bản
+    # enriched (28 token) -> frame đích ở rank 2, 203/300 frame thuộc video đích. Đây là
+    # chênh lệch giữa "không tìm thấy" và "gần như đầu bảng", nên đáng đổi tính song song.
+    #
+    # Không còn chạy song song ở đường nào: nhánh có LLM phải chờ enriched mới biết
+    # encode chữ gì, nhánh không LLM thì chẳng có gì để chờ.
+    async def _encode(text: str):
+        return await searchcore.encode(text, request_id=rid,
+                                       timeout=st.encode_timeout_s)
 
     t0 = time.perf_counter()
     try:
-        vector, enrichment = await asyncio.gather(_encode(), _enrich())
+        if req.tags is not None or not req.use_llm:
+            # KHÔNG gọi LLM: client chỉ định tag sẵn, hoặc user tắt LLM.
+            enrichment = enrich_svc.Enrichment(enriched_text=req.text)
+            vector = await _encode(req.text)
+        else:
+            enrichment = await enrich_svc.enrich(req.text, vocab, st)
+            # enrich lỗi -> enriched_text đã là query gốc, encode nó là đúng đường lùi.
+            vector = await _encode(enrichment.enriched_text or req.text)
     except grpc.aio.AioRpcError as ex:
         code = ex.code()
         if code == grpc.StatusCode.UNAVAILABLE:
@@ -107,7 +120,9 @@ async def search(req: SearchRequest) -> SearchResponse:
         if code == grpc.StatusCode.DEADLINE_EXCEEDED:
             raise HTTPException(504, "encode query quá thời gian") from ex
         raise HTTPException(502, f"searchcore: {code.name}: {ex.details()}") from ex
-    parallel_ms = (time.perf_counter() - t0) * 1000
+    # Trước là thời gian của bước SONG SONG; giờ LLM và encode chạy tuần tự nên đây là
+    # tổng của cả hai. Đổi tên field để số liệu không nói sai về cách hệ thống chạy.
+    llm_encode_ms = (time.perf_counter() - t0) * 1000
 
     tags = req.tags if req.tags is not None else enrichment.tags
 
@@ -150,7 +165,7 @@ async def search(req: SearchRequest) -> SearchResponse:
              "llm+encode %.0fms, core %.0fms, tổng %.0fms",
              rid, req.text[:60], len(hits), list(resp.meta.tags_used),
              tm.filter_matched, _STRATEGY.get(tm.filter_strategy_used, "?"),
-             parallel_ms, tm.total_ms, total_ms)
+             llm_encode_ms, tm.total_ms, total_ms)
 
     return SearchResponse(
         hits=hits,
@@ -161,7 +176,7 @@ async def search(req: SearchRequest) -> SearchResponse:
         warnings=warnings,
         snapshot_ver=resp.meta.snapshot_ver or snap_ver,
         timings_ms={
-            "llm_and_encode_parallel": round(parallel_ms, 2),
+            "llm_then_encode": round(llm_encode_ms, 2),
             "llm": round(enrichment.latency_ms, 2),
             "core_encode": round(tm.encode_ms, 2),
             "core_filter": round(tm.filter_ms, 2),
@@ -176,6 +191,18 @@ async def search(req: SearchRequest) -> SearchResponse:
             "enriched_text": enrichment.enriched_text,
             "error": enrichment.error,
             "used_llm": req.tags is None and req.use_llm,
+            # Tag guard regex đóng góp. Bù thường xuyên = prompt đang lệch so với
+            # taxonomy ingest, cần xem lại services/taxonomy.py.
+            "guard_added": enrichment.guard_added,
+            # LLM tự khai (0..1) và AI đã quyết định tập tag: "llm" |
+            # "guard_low_confidence" | "llm_empty". Không phơi ra thì không phân biệt
+            # được "LLM chọn thế" với "guard chọn thay vì LLM không chắc".
+            "confidence": enrichment.confidence,
+            "tag_source": enrichment.tag_source,
+            # Text THỰC SỰ được encode — khác query gốc khi có enrich. Không expose thì
+            # không cách nào biết vector được dựng từ chữ nào.
+            "encoded_text": (req.text if (req.tags is not None or not req.use_llm)
+                             else (enrichment.enriched_text or req.text)),
         },
     )
 

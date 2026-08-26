@@ -60,11 +60,36 @@ def test_hits_carry_fields_needed_to_submit_and_seek(client, llm):
     assert hit["point_id"] > 0
 
 
-def test_llm_and_encode_run_in_parallel(client, llm):
-    """Tổng phải là max(LLM, encode), không phải tổng cộng — tiết kiệm 80-300ms/query."""
-    llm.reply = {"tags": [], "enriched": ""}
-    t = search(client)["timings_ms"]
-    assert t["llm_and_encode_parallel"] <= t["llm"] + t["core_encode"] + 50
+def test_encode_dung_ban_enriched_khong_dung_query_goc(client, llm):
+    """Vector query phải dựng từ bản `enriched` tiếng Anh, không phải query gốc.
+
+    Thay cho test cũ đòi LLM và encode chạy SONG SONG. Tính song song đã bị bỏ có chủ
+    ý: tokenizer SigLIP giới hạn 64 token cứng và tốn 4-7,5x token cho tiếng Việt, nên
+    query tiếng Việt dài bị cắt mất phần chi tiết ở cuối. Đo thật trên một câu 194
+    token: encode query gốc -> video đích 0/300 frame; encode bản enriched -> frame
+    đích ở rank 0. Không đánh đổi được bằng latency.
+    """
+    llm.reply = {"tags": [], "enriched": "football player celebrating"}
+    d = search(client)
+    assert d["enrichment"]["encoded_text"] == "football player celebrating"
+    # Tuần tự nên tổng >= từng phần; field cũng phải đổi tên theo cho khỏi nói sai.
+    assert "llm_and_encode_parallel" not in d["timings_ms"]
+    assert d["timings_ms"]["llm_then_encode"] >= 0
+
+
+def test_khong_dung_llm_thi_encode_query_goc(client, llm):
+    """Không có enrich thì không có gì để chờ -> encode nguyên văn query gốc."""
+    d = search(client, use_llm=False)
+    assert llm.calls == 0
+    assert d["enrichment"]["encoded_text"] == d["enrichment"]["enriched_text"]
+
+
+def test_enrich_loi_thi_encode_query_goc(client, llm):
+    """LLM lỗi -> enriched_text đã là query gốc, encode nó là đường lùi đúng."""
+    llm.raises = RuntimeError("provider chết")
+    d = search(client)
+    assert d["enrichment"]["error"]
+    assert d["enrichment"]["encoded_text"] == d["enrichment"]["enriched_text"]
 
 
 # --------------------------- đường lùi ---------------------------
