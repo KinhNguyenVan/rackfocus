@@ -16,7 +16,7 @@ on:
         description: "Tag ảnh (mặc định = sha ngắn)"
         required: false
       gpu:
-        description: "Build bản GPU (onnxruntime-gpu, ảnh ~4-5GB) thay vì CPU"
+        description: "Build bản GPU (onnxruntime-gpu, ảnh 2.4GB) thay vì CPU (1.4GB)"
         type: boolean
         default: false
   push:

@@ -261,7 +261,8 @@ Driver là của **host**, container không cài được. Pod dùng driver < 58
 thì CUDA EP im lặng không nạp → chạy CPU chậm 20x. Xem `nvidia-smi` trên pod trước khi
 nâng: `--build-arg ORT_GPU_SPEC="onnxruntime-gpu[cuda,cudnn]"`.
 
-Ảnh GPU nặng ~4–5GB (wheel CUDA/cuDNN) so với 1.4GB bản CPU → container disk ≥ 25GB.
+Ảnh GPU **2.4GB** (đo thật, gồm wheel CUDA/cuDNN) so với 1.4GB bản CPU → container
+disk 20GB là đủ.
 
 ### Kiểm tra sau khi bật GPU
 

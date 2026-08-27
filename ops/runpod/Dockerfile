@@ -37,7 +37,7 @@ WORKDIR /app
 #
 # KHÔNG cần base image nvidia/cuda: extras [cuda,cudnn] kéo về các wheel nvidia-* nên
 # CUDA runtime + cuDNN nằm trong site-packages, chỉ cần *driver* NVIDIA ở host (RunPod
-# lo phần đó). Bù lại ảnh phình lên ~4-5GB.
+# lo phần đó). Bù lại ảnh từ 1.4GB lên 2.4GB (đo thật).
 #
 # Phải uninstall onnxruntime trước: hai gói cung cấp CÙNG module `onnxruntime`, cài chồng
 # thì import ra bản nào là chuyện của thứ tự file — không phải điều muốn đoán lúc thi.
