@@ -17,62 +17,24 @@ import uuid
 
 import grpc
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
 from ..clients import searchcore
 from ..config import get_settings
+from ..schemas.search import (
+    STRATEGY_NAMES,
+    EnrichmentInfo,
+    Hit,
+    SearchRequest,
+    SearchResponse,
+    TagItem,
+    TagsResponse,
+)
+from ..services import cache
 from ..services import enrich as enrich_svc
 from ..services import tagvocab
 
 log = logging.getLogger("app.api.search")
 router = APIRouter()
-
-# Khớp FilterStrategy trong proto — trả tên ra ngoài cho dễ đọc.
-_STRATEGY = {0: "unspecified", 1: "pre", 2: "post", 3: "exact_subset"}
-
-
-class SearchRequest(BaseModel):
-    text: str = Field(min_length=1)
-    top_k: int | None = None
-    # Tắt LLM để tìm toàn bộ corpus. Đây là đường lùi khi LLM chọn sai tag.
-    use_llm: bool = True
-    # Chỉ định tag thẳng, bỏ qua LLM (dùng để debug hoặc khi user tự chọn).
-    tags: list[int] | None = None
-    min_score: float | None = None
-    # False (mặc định) = "rerank": core tự chọn — có tag hẹp thì EXACT_SUBSET trên
-    # subset, không thì HNSW+SQ8 coarse rồi rerank exact trên top rerank_candidates.
-    # True = "exact": ép brute-force TOÀN candidate (hoặc toàn corpus nếu không tag),
-    # bỏ qua HNSW hoàn toàn — chậm hơn nhưng không xấp xỉ.
-    exact: bool = False
-
-
-class Hit(BaseModel):
-    point_id: int
-    row: int
-    score: float
-    rank: int
-    video_name: str = ""
-    frame: int = 0
-    keyframe_time: float = 0.0
-    start_sec: float = 0.0
-    end_sec: float = 0.0
-    keyframe_url: str = ""
-    clip_url: str = ""
-    scene_idx: int = 0
-    has_speech: bool = False
-
-
-class SearchResponse(BaseModel):
-    hits: list[Hit]
-    # Phơi ra để user biết mình vừa tìm trong bao nhiêu phần của kho.
-    tags_used: list[int]
-    candidate_count: int
-    corpus_count: int
-    strategy: str
-    warnings: list[str]
-    snapshot_ver: str
-    timings_ms: dict[str, float]
-    enrichment: dict
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -99,19 +61,43 @@ async def search(req: SearchRequest) -> SearchResponse:
     # Không còn chạy song song ở đường nào: nhánh có LLM phải chờ enriched mới biết
     # encode chữ gì, nhánh không LLM thì chẳng có gì để chờ.
     async def _encode(text: str):
-        return await searchcore.encode(text, request_id=rid,
-                                       timeout=st.encode_timeout_s)
+        key = cache.embedding_key(text, snap_ver)
+        hit = cache.embedding.get(key)
+        if hit is not None:
+            return hit
+        vector = await searchcore.encode(text, request_id=rid,
+                                         timeout=st.encode_timeout_s)
+        cache.embedding.set(key, vector)
+        return vector
+
+    async def _enrich(text: str):
+        # KHÔNG cache khi enrich lỗi: lỗi thường là tạm thời (timeout, rate limit) mà TTL
+        # tới 1 giờ, cache lại là khoá cứng trạng thái "không lọc tag" cho cả phiên thi.
+        key = cache.enrichment_key(text, snap_ver, st.llm_model, st.llm_max_tags,
+                                   st.llm_tag_confidence_min)
+        hit = cache.enrichment.get(key)
+        if hit is not None:
+            return hit, True
+        result = await enrich_svc.enrich(text, vocab, st)
+        if result.ok:
+            cache.enrichment.set(key, result)
+        return result, False
+
+    # Tính một lần rồi dùng lại ở response: điều kiện này trước đây bị viết lặp ba chỗ.
+    used_llm = req.tags is None and req.use_llm
 
     t0 = time.perf_counter()
     try:
-        if req.tags is not None or not req.use_llm:
+        if not used_llm:
             # KHÔNG gọi LLM: client chỉ định tag sẵn, hoặc user tắt LLM.
             enrichment = enrich_svc.Enrichment(enriched_text=req.text)
-            vector = await _encode(req.text)
+            encoded_text = req.text
+            from_cache = False
         else:
-            enrichment = await enrich_svc.enrich(req.text, vocab, st)
+            enrichment, from_cache = await _enrich(req.text)
             # enrich lỗi -> enriched_text đã là query gốc, encode nó là đúng đường lùi.
-            vector = await _encode(enrichment.enriched_text or req.text)
+            encoded_text = enrichment.enriched_text or req.text
+        vector = await _encode(encoded_text)
     except grpc.aio.AioRpcError as ex:
         code = ex.code()
         if code == grpc.StatusCode.UNAVAILABLE:
@@ -162,22 +148,27 @@ async def search(req: SearchRequest) -> SearchResponse:
 
     total_ms = (time.perf_counter() - t_all) * 1000
     log.info("[%s] %r -> %d hit | tags=%s candidate=%d strategy=%s | "
-             "llm+encode %.0fms, core %.0fms, tổng %.0fms",
+             "llm+encode %.0fms, core %.0fms, tổng %.0fms | cache emb %.0f%% enr %.0f%%",
              rid, req.text[:60], len(hits), list(resp.meta.tags_used),
-             tm.filter_matched, _STRATEGY.get(tm.filter_strategy_used, "?"),
-             llm_encode_ms, tm.total_ms, total_ms)
+             tm.filter_matched, STRATEGY_NAMES.get(tm.filter_strategy_used, "?"),
+             llm_encode_ms, tm.total_ms, total_ms,
+             cache.embedding.stats()["hit_rate"] * 100,
+             cache.enrichment.stats()["hit_rate"] * 100)
 
     return SearchResponse(
         hits=hits,
         tags_used=list(resp.meta.tags_used),
         candidate_count=tm.filter_matched,
         corpus_count=resp.total_estimated,
-        strategy=_STRATEGY.get(tm.filter_strategy_used, "unspecified"),
+        strategy=STRATEGY_NAMES.get(tm.filter_strategy_used, "unspecified"),
         warnings=warnings,
         snapshot_ver=resp.meta.snapshot_ver or snap_ver,
         timings_ms={
             "llm_then_encode": round(llm_encode_ms, 2),
-            "llm": round(enrichment.latency_ms, 2),
+            # Cache hit thì request này không gọi LLM -> 0. Giữ latency lần gọi gốc ở
+            # field riêng để vẫn thấy được cache đang tiết kiệm bao nhiêu.
+            "llm": 0.0 if from_cache else round(enrichment.latency_ms, 2),
+            "llm_when_cached": round(enrichment.latency_ms, 2) if from_cache else 0.0,
             "core_encode": round(tm.encode_ms, 2),
             "core_filter": round(tm.filter_ms, 2),
             "core_coarse": round(tm.coarse_ms, 2),
@@ -185,34 +176,28 @@ async def search(req: SearchRequest) -> SearchResponse:
             "core_total": round(tm.total_ms, 2),
             "total": round(total_ms, 2),
         },
-        enrichment={
-            "model": enrichment.model,
-            "tags": enrichment.tags,
-            "enriched_text": enrichment.enriched_text,
-            "error": enrichment.error,
-            "used_llm": req.tags is None and req.use_llm,
-            # Tag guard regex đóng góp. Bù thường xuyên = prompt đang lệch so với
-            # taxonomy ingest, cần xem lại services/taxonomy.py.
-            "guard_added": enrichment.guard_added,
-            # LLM tự khai (0..1) và AI đã quyết định tập tag: "llm" |
-            # "guard_low_confidence" | "llm_empty". Không phơi ra thì không phân biệt
-            # được "LLM chọn thế" với "guard chọn thay vì LLM không chắc".
-            "confidence": enrichment.confidence,
-            "tag_source": enrichment.tag_source,
-            # Text THỰC SỰ được encode — khác query gốc khi có enrich. Không expose thì
-            # không cách nào biết vector được dựng từ chữ nào.
-            "encoded_text": (req.text if (req.tags is not None or not req.use_llm)
-                             else (enrichment.enriched_text or req.text)),
-        },
+        enrichment=EnrichmentInfo(
+            model=enrichment.model,
+            tags=enrichment.tags,
+            enriched_text=enrichment.enriched_text,
+            error=enrichment.error,
+            used_llm=used_llm,
+            guard_added=enrichment.guard_added,
+            confidence=enrichment.confidence,
+            tag_source=enrichment.tag_source,
+            encoded_text=encoded_text,
+            cached=from_cache,
+        ),
     )
 
 
-@router.get("/tags")
-async def tags() -> dict:
+@router.get("/tags", response_model=TagsResponse)
+async def tags() -> TagsResponse:
     """Vocab đang dùng — để FE hiển thị và để debug tại sao LLM chọn tag đó."""
     st = get_settings()
     vocab, ver = await tagvocab.get(st)
-    return {"snapshot_ver": ver, "count": len(vocab),
-            "tags": [{"id": k, "name": v.name, "description": v.description,
-                      "point_count": v.point_count}
-                     for k, v in sorted(vocab.items())]}
+    return TagsResponse(
+        snapshot_ver=ver, count=len(vocab),
+        tags=[TagItem(id=k, name=v.name, description=v.description,
+                      point_count=v.point_count)
+              for k, v in sorted(vocab.items())])

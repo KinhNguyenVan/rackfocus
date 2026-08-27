@@ -104,6 +104,21 @@ class FakeEncoder:
         return self.encode([text])[0]
 
 
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    """Xoá cache embedding/enrich trước MỖI test.
+
+    `services/cache.py` giữ cache ở module level nên nó sống xuyên test. Không xoá thì
+    test sau dùng cùng câu query nhưng đặt `llm.reply` khác lại nhận kết quả test trước
+    đã cache — đúng 5 test đã đỏ khi mới nối cache vào.
+    """
+    from app.services import cache
+
+    cache.embedding.clear()
+    cache.enrichment.clear()
+    yield
+
+
 @pytest.fixture
 def llm():
     """Mock litellm. `llm.reply` để đổi hành vi, `llm.calls` để đếm.
