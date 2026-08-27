@@ -560,20 +560,22 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                           </select>
                         </div>
                       )}
-                      <button
-                        className="btn btn-outline-secondary"
-                        type="submit"
-                      >
-                        <i className="bi bi-search"></i>
-                      </button>
-                      <button
-                        className="btn btn-sm btn-outline-danger ms-2"
-                        type="button"
-                        onClick={clear}
-                        title="Clear saved search state"
-                      >
-                        Clear
-                      </button>
+                      <div className="d-flex align-items-center gap-2 mt-2">
+                        <button
+                          className="btn btn-sm btn-outline-secondary px-3"
+                          type="submit"
+                        >
+                          <i className="bi bi-search"></i>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline-danger"
+                          type="button"
+                          onClick={clear}
+                          title="Clear saved search state"
+                        >
+                          Clear
+                        </button>
+                      </div>
                     </form>
                     <div className="form-check form-switch mb-3">
                       <input
