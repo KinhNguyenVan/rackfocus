@@ -25,6 +25,11 @@ snapshots/
 models/
 data/
 
+# MODEL_CACHE_DIR khi chạy local (README §"Chạy local"): ~4GB encoder + snapshot tải từ
+# S3. Đã trúng snapshots/ + models/ ở trên, nhưng khai thẳng để sidecar mới trong
+# snapshot (file .json, .bin...) không lọt ra thành untracked.
+.cache/
+
 # output của AIC_KeyframeSceneMap.ipynb — regenerable từ S3, file gộp root-level (2 file
 # 200MB+) vượt giới hạn 100MB/file của GitHub. Upload lên S3 qua UPLOAD_MAP=True nếu cần lưu.
 maps/

@@ -5,14 +5,37 @@ import react from "@vitejs/plugin-react";
 // khi chạy dưới docker-compose (tên service, không resolve được ngoài network đó).
 const BE_TARGET = process.env.VITE_BE_TARGET || "http://localhost:8000";
 
+// RunPod Serverless: mọi request tới endpoint PHẢI có `Authorization: Bearer <api key>`.
+// Trình duyệt KHÔNG gắn được header vào một lần điều hướng thường (gõ URL vào thanh địa
+// chỉ), nên không thể mở FE trực tiếp từ endpoint. Cách gọn nhất khi thi: chạy FE ở máy
+// mình, để vite proxy chèn header — key nằm trên máy, không bao giờ vào bundle JS.
+//
+//   RUNPOD_ENDPOINT_ID=xxxx RUNPOD_API_KEY=yyyy npm run dev
+//
+// KHÔNG dùng tiền tố VITE_ cho key: biến VITE_* bị nhúng thẳng vào bundle và ai mở
+// devtools cũng đọc được.
+const RUNPOD_ID = process.env.RUNPOD_ENDPOINT_ID || "";
+const RUNPOD_KEY = process.env.RUNPOD_API_KEY || "";
+const useRunpod = Boolean(RUNPOD_ID && RUNPOD_KEY);
+
+const target = useRunpod ? `https://${RUNPOD_ID}.api.runpod.ai` : BE_TARGET;
+const headers = useRunpod ? { Authorization: `Bearer ${RUNPOD_KEY}` } : undefined;
+
+if (RUNPOD_ID && !RUNPOD_KEY) {
+  console.warn("[vite] có RUNPOD_ENDPOINT_ID nhưng thiếu RUNPOD_API_KEY -> vẫn dùng " + BE_TARGET);
+}
+console.log(`[vite] proxy /api -> ${target}${useRunpod ? " (kèm Bearer token)" : ""}`);
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: "0.0.0.0",
     port: 5173,
     proxy: {
-      "/api": { target: BE_TARGET, changeOrigin: true },
-      "/ws":  { target: BE_TARGET.replace("http", "ws"), ws: true },
+      // changeOrigin bắt buộc khi target là RunPod: họ định tuyến theo Host header, gửi
+      // "localhost:5173" thì không tới được endpoint.
+      "/api": { target, changeOrigin: true, headers },
+      "/ws": { target: target.replace(/^http/, "ws"), ws: true, headers },
     },
   },
 });

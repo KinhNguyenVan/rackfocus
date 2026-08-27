@@ -1,0 +1,46 @@
+# Caddy trong pod: HTTP thuần, KHÔNG auto-TLS.
+#
+# RunPod đã cắt TLS ở proxy Cloudflare của họ (https://<podid>-8080.proxy.runpod.net),
+# nên bật auto-TLS ở đây là vừa vô ích vừa hỏng: Caddy sẽ đi xin cert cho một domain
+# nó không sở hữu.
+
+:{$POD_PORT:8080} {
+	encode gzip zstd
+
+	# /ping ĐỨNG NGOÀI basic_auth, có chủ ý: RunPod Serverless load-balancing gọi nó để
+	# biết worker đã sẵn sàng chưa, và nó KHÔNG gửi được basic auth. Bị 401 thì LB coi
+	# worker là hỏng, thay worker, và vòng tải snapshot 3.8GB bắt đầu lại — vô tận.
+	# Endpoint này không tiết lộ gì: chỉ có mã trạng thái, không có body.
+	handle /ping {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		# start.sh ghi file này: rỗng nếu không đặt POD_USER/POD_PASS_HASH, còn không
+		# thì chứa block basic_auth. Cần cho POD vì URL proxy của RunPod là PUBLIC — ai
+		# có pod id là gọi được /api/search, tức đốt quota Cerebras của bạn.
+		# Trên SERVERLESS thì để trống: RunPod đã bắt Bearer token ở trước.
+		import /etc/caddy/auth.conf
+
+		@api path /api/* /ws/* /healthz /readyz
+		handle @api {
+			reverse_proxy 127.0.0.1:8000 {
+				# Worst case của BE: llm 6s + encode 15s + search 30s = 51s. Để 60s là
+				# còn biên, mà vẫn dưới hạn 100s của Cloudflare (pod) và 5,5 phút của
+				# serverless — quá hạn thì client nhận 524 của Cloudflare, không phải
+				# lỗi của mình, rất khó lần.
+				transport http {
+					read_timeout 60s
+				}
+			}
+		}
+
+		handle {
+			root * /srv
+			# SPA: route phía client (vd /video/L30_V046) phải trả về index.html chứ
+			# không phải 404. Bản compose cũ không cần vì fe container tự lo.
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}

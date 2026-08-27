@@ -43,13 +43,42 @@ class Config:
     # ef_search KHÔNG nhận per-request: chỉ áp được bằng cách gán
     # index.hnsw.efSearch, tức mutable state trên object dùng chung mọi thread.
     # Xem docs/search-design.md §7.
-    ef_search: int = _int("FAISS_EF_SEARCH", 64)
+    # 64 là con số cho search KHÔNG lọc. Với filtered search (HNSW + IDSelector) nó làm
+    # LỌC TAG TẮT HẲN mà không báo lỗi: HNSW chỉ thăm ~ef_search node rồi mới lọc, nên
+    # với tỉ lệ nhận ~6-10% thì trả về ~4-6 kết quả. search_with_fallback thấy
+    # rows < top_k liền rơi về full corpus và xoá tags_used -> mọi tag đi đường `pre`
+    # (bucket > EXACT_SUBSET_MAX) đều vô hiệu, chỉ để lại warning "tag_fallback".
+    # Đo với recall@300 so GROUND TRUTH THẬT (chế độ exact brute-force), corpus 613k/
+    # 13 tag, top_k=300, rerank_candidates=1000, EXACT_SUBSET_MAX=100k:
+    #            untagged            tag 361k (59% corpus, tag duy nhất còn qua HNSW)
+    #   ef=2000  99,3% /  20ms       71,4% / 177ms
+    #   ef=4000  99,7% /  29ms       92,4% / 238ms
+    #   ef=10000 99,8% /  95ms         --
+    #   ef=20000 99,9% / 276ms         --
+    # Chọn 4000: recall untagged gần như PHẲNG theo ef (99,3 -> 99,9% khi ef tăng 10x)
+    # nên ef cao là mua rất ít recall bằng rất nhiều latency. Sau khi nâng
+    # EXACT_SUBSET_MAX lên 100k thì 12/13 tag đi đường exact (recall 100%), HNSW chỉ
+    # còn phục vụ untagged + tag 361k — mà cả hai đều có tỉ lệ nhận cao nên ef thấp đủ.
+    #
+    # rerank_candidates KHÔNG phải nút thắt: rc=1000 và rc=4000 cho recall y hệt
+    # (99,7%/79,0%), vì số candidate tới được rerank bị chặn bởi ef x tỉ lệ nhận, chứ
+    # không phải bởi rc.
+    ef_search: int = _int("FAISS_EF_SEARCH", 4_000)
     rerank_candidates: int = _int("RERANK_CANDIDATES", 800)
 
-    # Ngưỡng DUY NHẤT chọn EXACT_SUBSET vs 2-tier. Đo được ở dim=1152: 8.5k candidate
-    # = 7.4ms, 20k = 12.6ms, 50k = 63ms (bound bởi băng thông, không phải FLOPs).
-    # Phải đo lại trên máy thật rồi chốt.
-    exact_subset_max: int = _int("EXACT_SUBSET_MAX", 20_000)
+    # Ngưỡng DUY NHẤT chọn EXACT_SUBSET vs 2-tier. Nâng 20k -> 100k sau khi đo trên
+    # corpus thật 613k/13 tag, top_k=300, visual.f16 đã pin trong page cache:
+    #    9.098 điểm ->   9ms |  37.674 ->  47ms |  59.750 ->  36ms |  61.146 ->  39ms
+    #  361.319 điểm -> 630ms | 612.975 -> 12.163ms
+    # Tuyến tính tới ~60-100k rồi vỡ hẳn (361k = 16x thời gian của 60k dù chỉ 6x điểm):
+    # working set vượt RAM còn trống nên thrash. Chọn 100k vì 12/13 tag hiện tại đều
+    # <= 61.146 điểm, tức đi đường exact và đạt recall 100% ở 25-47ms — vừa CHÍNH XÁC
+    # HƠN vừa NHANH HƠN nhánh HNSW+IDSelector (88,9% ở 95ms với ef=10000).
+    #
+    # BẮT BUỘC pin visual.f16 vào RAM (vmtouch, đã có trong Dockerfile): cùng query
+    # tag 59.750 điểm đo được 477ms lúc page fault so với 24ms khi warm — chênh 20x.
+    # Ngưỡng này phụ thuộc RAM còn trống của máy, đổi máy phải đo lại điểm vỡ.
+    exact_subset_max: int = _int("EXACT_SUBSET_MAX", 100_000)
 
     # ── TRAKE (docs/superpowers/specs/2026-08-24-temporal-search-design.md) ──────
     # Top-K candidate rows per event BEFORE joining by video — bounds join cost,

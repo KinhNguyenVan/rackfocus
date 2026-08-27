@@ -30,6 +30,27 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_tags: int = 5
 
+    # LLM tự khai độ chắc chắn (0..1) cho danh sách tag nó chọn. Dưới ngưỡng này thì
+    # BỎ tag của LLM và dùng tag của guard regex (services/taxonomy.py); guard cũng
+    # không nhận ra gì thì trả rỗng = search toàn kho.
+    #
+    # Vì sao cần: lọc tag là CỨNG nên LLM đoán sai mà vẫn tự tin là mất hẳn đáp án.
+    # Đã gặp thật — query "tập thể dục" bị xếp vào Chính trị/Du lịch/Giao thông/Thời sự
+    # (142.490 điểm, đủ lấp 300 kết quả nên tag_fallback không kích hoạt), còn video
+    # đích mang tag health -> 0/300 frame đúng. Thà search rộng còn hơn lọc sai.
+    llm_tag_confidence_min: float = 0.75
+
+    # ĐỪNG hạ về 400 (giá trị cũ). Model reasoning (gpt-oss-120b...) tiêu token cho
+    # reasoning TRƯỚC khi sinh content: query dài đo được 1437 ký tự reasoning + 408
+    # completion token. 400 làm finish_reason=length -> JSON bị cắt giữa chuỗi (có lúc
+    # content rỗng hẳn) -> _parse raise "không thấy JSON" -> enrich tắt trong im lặng,
+    # và chỉ tắt với query DÀI nên rất dễ tưởng là lỗi ngẫu nhiên.
+    llm_max_tokens: int = 2000
+
+    # "low"/"medium"/"high", rỗng = không gửi tham số (model không reasoning sẽ lỗi nếu
+    # nhận). "low" đo được: 408 -> 167 completion token mà JSON vẫn đúng.
+    llm_reasoning_effort: str = ""
+
     # Bật/tắt LLM cho từng request được (giữ cờ use_llm của Handoff §4.2) — khi LLM chọn
     # sai tag thì đây là đường lùi duy nhất của người dùng.
     llm_enabled: bool = True

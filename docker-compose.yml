@@ -32,8 +32,6 @@ services:
       - sc_sock:/var/run/searchcore
     depends_on:
       searchcore: { condition: service_healthy }
-      postgres:   { condition: service_healthy }
-      redis:      { condition: service_started }
     deploy:
       resources:
         limits: { memory: 3G }
@@ -71,44 +69,26 @@ services:
         limits: { memory: 12G }
     logging: *logging
 
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: rackfocus
-      POSTGRES_USER: vs
-      POSTGRES_PASSWORD: ${PG_PASS}
-    command: >
-      postgres
-      -c shared_buffers=2GB
-      -c effective_cache_size=6GB
-      -c work_mem=64MB
-      -c maintenance_work_mem=512MB
-      -c random_page_cost=1.1
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./sql/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vs -d rackfocus"]
-      interval: 5s
-      retries: 20
-    logging: *logging
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: >
-      redis-server
-      --maxmemory 2gb
-      --maxmemory-policy allkeys-lru
-      --save 900 1
-      --appendonly no
-    volumes: [redisdata:/data]
-    logging: *logging
+  # ── postgres + redis: ĐÃ BỎ ────────────────────────────────────────────────────
+  # Không service nào trong compose này dùng chúng:
+  #   * BE: toàn bộ db/{models,queries,session}.py, deps.py, services/{prefilter,
+  #     hydrate}.py vẫn là stub 1 dòng docstring; không có dòng asyncpg/sqlalchemy nào
+  #     được gọi. `migrations/versions/` rỗng (chỉ .gitkeep) nên `alembic upgrade head`
+  #     không có gì để chạy.
+  #   * core: không đụng DB, nó đọc snapshot từ S3.
+  # Tệ hơn: BE từng `depends_on: postgres: service_healthy`, tức BE không khởi động nổi
+  # khi chưa có một Postgres mà nó không bao giờ gọi tới.
+  #
+  # Redis cũng chưa dùng: `clients/redis.py` là stub, cache query nằm trong RAM tiến
+  # trình (services/cache.py). Cần chia sẻ cache giữa nhiều worker thì mới thêm lại.
+  #
+  # Mongo KHÔNG cần thêm vào đây: nó là Atlas remote (MONGO_URI dạng mongodb+srv://) và
+  # chỉ `services/ingest` dùng, mà ingest chạy offline chứ không nằm trong compose.
+  #
+  # Postgres vẫn còn cần cho ingest: `ingest/db.py` cấp video_id/scene_idx cho payload
+  # embedding (pipeline.py). Đó là đường offline, dựng riêng khi chạy pipeline.
 
 volumes:
-  pgdata:
-  redisdata:
   caddy_data:
   sc_sock:
   sc_cache:   # snapshot + encoder tải từ S3, giữ qua các lần recreate container

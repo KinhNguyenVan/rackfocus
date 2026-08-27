@@ -5,12 +5,20 @@ grpcio-tools
 protobuf
 onnxruntime
 pydantic-settings
-# Runtime-only (SC_STUB_MODE=0): snapshot.py reads payload.parquet; base.py falls back to
-# boto3 to pull SNAPSHOT_S3/ENCODER_S3 when ingest.storage isn't importable.
+
+# snapshot.py::_load_files import lazy để đọc payload parquet.
 pyarrow
+
+# encoder/base.py::resolve_bundle tải bundle từ ENCODER_S3/SNAPSHOT_S3. Thử
+# ingest.storage.download_dir trước, không import được thì tự tải bằng boto3.
 boto3
-# text.py prefers the lightweight `tokenizers` (Rust) tokenizer when the bundle ships
-# tokenizer.json; the current SigLIP text bundle on S3 ships spiece.model instead, which
-# needs AutoTokenizer -> transformers + sentencepiece.
+
+# encoder/text.py::_load_tokenizer ưu tiên `tokenizers` (Rust, nhẹ) khi bundle có
+# tokenizer.json, nếu không thì rơi xuống transformers.AutoTokenizer.
+# Bundle trên S3 hiện CHƯA có tokenizer.json (chỉ model.onnx + spiece.model +
+# tokenizer_config.json) nên nhánh transformers là nhánh chạy thật -> phải khai cả hai.
+# Thêm tokenizer.json vào bundle thì bỏ được transformers+sentencepiece (~1GB), đúng
+# chủ trương "core chỉ ONNX".
+tokenizers
 transformers
 sentencepiece

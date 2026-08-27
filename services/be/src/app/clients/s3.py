@@ -347,44 +347,102 @@ class AWSStorageHelper:
 
     def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25,
                             to_key: str | None = None) -> list:
-        """N khung trước `current_key` .. N khung sau `to_key` (mặc định `to_key` =
-        `current_key`, tức 1-mỏ neo như cũ). Dành cho AIC Keyframes. Cả hai key phải
-        cùng video (cùng thư mục S3) -- dùng cho ô "xem frames giữa 2 sự kiện" của
-        temporal search, nơi cả 2 hit luôn cùng video.
+        """N khung trước `current_key` .. N khung sau `to_key`, kèm mọi khung ở giữa.
+
+        `to_key=None` (mặc định) = 1 mỏ neo, hành vi cũ. Hai mỏ neo dành cho ô "xem
+        frames giữa 2 sự kiện" của temporal search, nơi cả hai hit luôn cùng video —
+        nên khác video là lỗi của caller, raise chứ không im lặng.
+
+        Trả CẢ mỏ neo để UI đặt nó ở giữa và đánh dấu `is_current`.
+
+        KHÔNG paginate cả thư mục video. Key S3 zero-pad theo frame nên thứ tự
+        lexicographic cũng là thứ tự frame, dùng `StartAfter` đi thẳng tới vùng cần.
+        Bản cũ paginate toàn bộ một video (hàng chục nghìn object) cho mỗi click; trên
+        bucket thật việc đó mất **hơn hai phút**. Đường 1 mỏ neo ở đây vẫn chỉ tốn đúng
+        1-2 request như trước; chỉ đường 2 mỏ neo mới phải đọc thêm, và cũng chỉ đọc
+        đúng khoảng giữa hai frame chứ không đọc cả video.
         """
-        to_key = to_key or current_key
-        prefix, current_frame_num = self._parse_frame_key(current_key)
-        to_prefix, to_frame_num = self._parse_frame_key(to_key)
-        if to_prefix != prefix:
-            raise ValueError("current_key và to_key phải cùng video")
+        prefix, current_frame_num, width, ext = self._parse_frame_key(current_key)
+        if to_key:
+            to_prefix, to_frame_num, _, _ = self._parse_frame_key(to_key)
+            if to_prefix != prefix:
+                raise ValueError("current_key và to_key phải cùng video")
+        else:
+            to_frame_num = current_frame_num
+        # Không giả định thứ tự: chain temporal luôn đúng thứ tự nhưng min/max không tốn gì.
+        lo_frame, hi_frame = sorted((current_frame_num, to_frame_num))
 
-        paginator = self.s3_client.get_paginator("list_objects_v2")
-        all_keys = []
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-            if "Contents" in page:
-                for obj in page["Contents"]:
-                    key = obj["Key"]
-                    m = re.match(r".*/(\d+)\.webp$", key)
-                    if m:
-                        all_keys.append((int(m.group(1)), key))
+        def entries(response) -> list:
+            found = []
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                item = re.fullmatch(r".*/(\d+)\.webp", key)
+                if item:
+                    found.append((int(item.group(1)), key))
+            return found
 
-        if not all_keys:
-            return []
+        def key_at(frame: int) -> str:
+            return f"{prefix}{frame:0{width}d}{ext}"
 
-        all_keys.sort(key=lambda x: x[0])
-        frame_nums = [n for n, _ in all_keys]
-        start, end = neighbor_slice_bounds(frame_nums, current_frame_num, to_frame_num,
-                                           before, after)
+        def page(start_after: str, max_keys: int) -> list:
+            return entries(self.s3_client.list_objects_v2(
+                Bucket=self.bucket, Prefix=prefix,
+                StartAfter=start_after, MaxKeys=max_keys))
 
-        return [k for _, k in all_keys[start:end] if k not in (current_key, to_key)]
+        # frame -> key. Gom vào dict vì các đoạn dưới có thể chồng lấn nhau.
+        found: dict = {}
+
+        # ── Đoạn TRƯỚC lo_frame: nới cửa sổ số frame tới khi đủ `before` ──
+        # Keyframe không cách đều nhau (7/shot, shot dài ngắn khác nhau) nên không suy
+        # ra được khoảng cần đọc; 8x đủ cho sampling thường, nới gấp 4 nếu video thưa.
+        if before:
+            span = max(128, before * 8)
+            for _ in range(8):
+                anchor = max(0, lo_frame - span)
+                got = [x for x in page(prefix if anchor == 0 else key_at(anchor), 1000)
+                       if x[0] < lo_frame]
+                found.update(got)
+                if len(got) >= before or anchor == 0:
+                    break
+                span *= 4
+
+        # ── Từ lo_frame trở đi ──
+        # StartAfter loại chính nó nên phải lùi 1: key zero-pad cố định width nên
+        # key_at(lo-1) luôn nằm ngay trước key_at(lo) theo lexicographic, dù frame
+        # lo-1 không tồn tại thật.
+        start_after = prefix if lo_frame == 0 else key_at(lo_frame - 1)
+        if lo_frame == hi_frame:
+            # Đường 1 mỏ neo: đúng 1 request nhỏ, y như trước khi có temporal search.
+            found.update(page(start_after, max(after, 1) + 1))
+        else:
+            # Đường 2 mỏ neo: đọc tới khi vượt hi_frame và đủ `after` khung sau nó.
+            # Chặn 20 vòng: khoảng cách bị TRAKE_MAX_GAP_SEC giới hạn nên thực tế 1-2
+            # vòng là hết, vòng lặp có chặn chỉ để một key lạ không treo request.
+            for _ in range(20):
+                got = page(start_after, 1000)
+                if not got:
+                    break
+                found.update(got)
+                if sum(1 for f, _ in got if f > hi_frame) >= max(after, 1):
+                    break
+                start_after = got[-1][1]
+
+        ordered = sorted(found.items())
+        # Cắt theo VỊ TRÍ, không theo số học frame — xem docstring neighbor_slice_bounds.
+        # Hàm này raise nếu mỏ neo không có trên S3, browse.py map thành HTTP 400.
+        start, end = neighbor_slice_bounds([f for f, _ in ordered],
+                                           lo_frame, hi_frame, before, after)
+        return [k for _, k in ordered[start:end]]
 
     @staticmethod
     def _parse_frame_key(key: str) -> tuple:
+        """(prefix, frame_num, width, ext). `width` cần để dựng lại key làm mốc
+        StartAfter, `ext` để không hardcode .webp ở hai chỗ."""
         match = re.match(r"(.*/)(\d+)(\.webp)", key)
         if not match:
             raise ValueError(f"Định dạng key không hợp lệ: {key}")
-        prefix, frame_str, _ext = match.groups()
-        return prefix, int(frame_str)
+        prefix, frame_str, ext = match.groups()
+        return prefix, int(frame_str), len(frame_str), ext
 
 
 # ==========================================
