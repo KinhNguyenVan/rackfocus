@@ -27,14 +27,6 @@ function hashString(s: string): number {
   for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i);
   return h >>> 0;
 }
-const topics = [
-  "tin tức",
-  "Tin tức+múa lân",
-  "Tin tức+xe đạp",
-  "Tin tức+dạy học online",
-  "Tin tức+chương trình nấu ăn",
-];
-
 export default function App() {
   const [route, setRoute] = useState(window.location.pathname);
 
@@ -90,7 +82,6 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [submitted, setSubmitted] = useState("");
   const [flag, setFlag] = useState("");
   const [service, setService] = useState("image");
-  const [chosenTopics, setChosenTopics] = useState<string[]>([]);
   // Tắt = bỏ qua bước LLM chọn tag ở BE (services/be/src/app/api/search.py::_enrich
   // đã có sẵn use_llm), core search toàn bộ corpus không lọc theo tag.
   const [useLlm, setUseLlm] = useState(true);
@@ -224,7 +215,6 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       setQuery(saved.query ?? "");
       setFlag(saved.flagValue ?? "");
       setService(saved.serviceValue ?? "image");
-      setChosenTopics(saved.selectedTopics ?? []);
       setUseLlm(saved.useLlm ?? true);
       setExactMode(saved.exactMode ?? false);
       setSearchMode(saved.searchMode ?? "kis");
@@ -238,13 +228,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         query,
         flagValue: flag,
         serviceValue: service,
-        selectedTopics: chosenTopics,
         useLlm,
         exactMode,
         searchMode,
       }),
     );
-  }, [query, flag, service, chosenTopics, useLlm, exactMode, searchMode]);
+  }, [query, flag, service, useLlm, exactMode, searchMode]);
 
   useEffect(() => {
     const handleClick = () =>
@@ -283,7 +272,6 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     setQuery("");
     setFlag("");
     setService("image");
-    setChosenTopics([]);
     setUseLlm(true);
     setExactMode(false);
     setSubmitted("");
@@ -646,32 +634,6 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                           strategy thật: {strategy}
                         </small>
                       )}
-                    </div>
-                    <div className="mb-3">
-                      <label className="form-label small fw-semibold">
-                        Topics:
-                      </label>
-                      <div className="d-flex flex-wrap gap-2">
-                        {topics.map((topic) => (
-                          <div className="form-check" key={topic}>
-                            <input
-                              className="form-check-input topic-checkbox"
-                              type="checkbox"
-                              checked={chosenTopics.includes(topic)}
-                              onChange={() =>
-                                setChosenTopics((items) =>
-                                  items.includes(topic)
-                                    ? items.filter((i) => i !== topic)
-                                    : [...items, topic],
-                                )
-                              }
-                            />
-                            <label className="form-check-label small">
-                              {topic}
-                            </label>
-                          </div>
-                        ))}
-                      </div>
                     </div>
                   </div>
                 </div>
