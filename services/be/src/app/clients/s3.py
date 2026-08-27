@@ -325,6 +325,39 @@ class AWSStorageHelper:
             print(f"❌ Lỗi List Files: {e}")
             return []
 
+    def get_file_urls(
+        self,
+        prefix: str = "",
+        limit: int | None = None,
+        url_type: str = "public",
+        extensions: tuple[str, ...] = (".webp", ".jpg", ".jpeg", ".png"),
+        expiry: int = 3600,
+    ) -> list[str]:
+        """Lấy danh sách URL file trong một prefix để mock dữ liệu frontend.
+
+        `url_type` nhận `public`, `cloudfront` hoặc `presigned`. Với bucket private,
+        dùng `presigned` và nhớ rằng URL sẽ hết hạn sau `expiry` giây.
+        """
+        if url_type not in {"public", "cloudfront", "presigned"}:
+            raise ValueError("url_type phải là public, cloudfront hoặc presigned")
+        if limit is not None and limit < 0:
+            raise ValueError("limit phải >= 0 hoặc None")
+
+        normalized_extensions = tuple(ext.lower() for ext in extensions)
+        keys = [
+            item["Key"]
+            for item in self.list_files(prefix)
+            if not normalized_extensions or item["Key"].lower().endswith(normalized_extensions)
+        ]
+        if limit is not None:
+            keys = keys[:limit]
+
+        if url_type == "cloudfront":
+            return [self.get_cloudfront_url(key) for key in keys]
+        if url_type == "presigned":
+            return [url for key in keys if (url := self.generate_presigned_url(key, expiry))]
+        return [self.get_s3_public_url(key) for key in keys]
+
     def delete_file(self, object_name: str):
         """Xóa 1 file khỏi S3 Bucket."""
         try:

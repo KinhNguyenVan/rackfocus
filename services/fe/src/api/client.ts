@@ -1,6 +1,11 @@
 import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
+import { mockNeighbors, mockSearch, mockTemporalSearch } from "./mock";
+
+const USE_MOCK = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_USE_MOCK !== "false";
 
 export async function search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse> {
+	if (USE_MOCK) return Promise.resolve(mockSearch(request));
+
 	const response = await fetch("/api/search", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -23,6 +28,8 @@ export async function neighbors(
 	toKey?: string,
 	signal?: AbortSignal,
 ): Promise<NeighborsResponse> {
+	if (USE_MOCK) return Promise.resolve(mockNeighbors(keyframeUrl, before, after));
+
 	const params = new URLSearchParams({
 		key: keyframeUrl,
 		before: String(before),
@@ -43,6 +50,8 @@ export async function searchTemporal(
 	request: TemporalSearchRequest,
 	signal?: AbortSignal,
 ): Promise<TemporalSearchResponse> {
+	if (USE_MOCK) return Promise.resolve(mockTemporalSearch(request));
+
 	const response = await fetch("/api/search/temporal", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
