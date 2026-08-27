@@ -915,7 +915,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                   trước/sau".
                 </div>
               )}
-            <div className="row row-cols-2 g-1">
+            <div className="row row-cols-1 g-1">
               {neighborFrames.map((nf) => {
                 const item = neighborToResult(neighborVideo, nf);
                 const isSelected = selected.some(
