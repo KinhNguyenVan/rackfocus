@@ -99,12 +99,14 @@ Lần đầu core tải ~1.8GB encoder rồi tới snapshot, **không in log tro
 tiến độ bằng `du -sh .cache/searchcore`. Chỉ dùng `AWS_ACCESS_KEY`/`AWS_SECRET_KEY`
 (không phải tên chuẩn `AWS_ACCESS_KEY_ID` của boto3).
 
-**Terminal 2 — BE** (phải đợi core sẵn sàng *trước khi* chạy BE):
+**Terminal 2 — BE:**
 
-BE lấy tag vocab từ core **một lần duy nhất lúc startup**. Chạy BE trước core thì log ghi
-`khởi động: 0 tag từ snapshot ?` kèm cảnh báo *"search sẽ không lọc tag"*, và lọc theo
-topic trên UI sẽ im lặng không có tác dụng cho tới khi restart BE. Đúng thứ tự phải là
-core sẵn sàng → BE → FE.
+Chạy BE trước core thì log ghi `khởi động: 0 tag từ snapshot ?` kèm cảnh báo *"search sẽ
+không lọc tag"* — nhưng **không cần restart BE**: [tagvocab.py](services/be/src/app/services/tagvocab.py)
+thấy cache rỗng nên thử nạp lại ở mỗi request, và tự lấy được vocab ngay khi core sẵn
+sàng. Từ đó về sau nó chỉ gọi `health` (rẻ) để phát hiện core swap snapshot.
+
+Trong khoảng core chưa lên, search trả 503 chứ không trả kết quả sai.
 
 ```bash
 export SEARCHCORE_TARGET=localhost:50051     # ghi đè Unix socket trong .env
@@ -156,7 +158,7 @@ validate snapshot rồi warmup; trong khoảng đó search trả 503.
 | FE gọi `/api/*` ra 500/ECONNREFUSED | BE chưa chạy, hoặc `VITE_BE_TARGET` trỏ `http://be:8000` khi chạy ngoài compose |
 | `/api/neighbors` trả 502 | Thiếu `AWS_ACCESS_KEY`/`AWS_SECRET_KEY` |
 | Core chết vì không ghi được `MODEL_CACHE_DIR` | Mặc định `/var/cache/searchcore` cần root — trỏ vào thư mục trong repo |
-| Lọc theo topic trên UI không có tác dụng | Hai nguyên nhân khác nhau: (a) BE khởi động trước core → nạp 0 tag, restart BE; (b) response có `warnings: ["tag_fallback"]` và `tags_used: []` → `FAISS_EF_SEARCH` quá thấp, xem bên dưới |
+| Lọc theo topic trên UI không có tác dụng | Xem `enrichment.tag_source` trong response: `llm_empty` = LLM cố ý không chọn lĩnh vực nào; `guard_low_confidence` + `tags_used: []` = LLM không chắc mà guard cũng không nhận ra gì. Còn `warnings: ["tag_fallback"]` là chuyện khác — `FAISS_EF_SEARCH` quá thấp, xem bên dưới |
 | Core im lặng nhiều phút, không log gì | Bình thường: đang tải từ S3. Theo `du -sh .cache/searchcore` |
 
 ### `tag_fallback` — lọc tag tắt trong im lặng

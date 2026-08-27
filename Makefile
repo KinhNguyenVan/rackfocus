@@ -23,11 +23,11 @@ logs:  ## Xem log (S=tên service)
 ps:    ## Trạng thái container
 	$(COMPOSE) ps
 
-migrate: ## Chạy migration
-	$(COMPOSE) exec be alembic upgrade head
-
-warm:  ## Nạp hydration cache — bước lấy lại 15ms/query
-	$(COMPOSE) exec be python -m app.tools.warm_hydration_cache
+# migrate/warm ĐÃ BỎ:
+#   - migrate: `migrations/versions/` rỗng và compose không còn Postgres (BE không dùng).
+#   - warm: display payload giờ nằm TRONG snapshot, core trả sẵn qua hit.payload nên
+#     không còn bước hydrate từ Redis. `services/hydrate.py` +
+#     `tools/warm_hydration_cache.py` là stub lỗi thời theo thiết kế mới.
 
 bench: ## Đo latency (kỳ vọng p50<60ms, p95<150ms khi không dùng LLM)
 	$(COMPOSE) exec be python -m app.tools.bench --n 500 --concurrency 4
@@ -50,4 +50,4 @@ fmt:   ## Format
 lint:  ## Lint
 	ruff check services/be/src services/core/src services/ingest/src
 
-.PHONY: help proto up dev down logs ps migrate warm bench snapshot-pull snapshot-swap check-hw test fmt lint
+.PHONY: help proto up dev down logs ps bench snapshot-pull snapshot-swap check-hw test fmt lint

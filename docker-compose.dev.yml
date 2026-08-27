@@ -22,8 +22,3 @@ services:
     volumes:
       - ./services/fe/src:/app/src
     ports: ["5173:5173"]
-
-  postgres:
-    ports: ["5432:5432"]
-  redis:
-    ports: ["6379:6379"]
