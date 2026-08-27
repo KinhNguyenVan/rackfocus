@@ -3,10 +3,11 @@
 Tách khỏi test_s3_neighbors.py (test `neighbor_slice_bounds`, hàm thuần): ở đây kiểm
 đúng phần dễ sai nhất và trước giờ CHƯA có test nào — cách gọi `list_objects_v2`.
 
-Vì sao đáng test: bản cũ `paginator.paginate` cả thư mục video (hàng chục nghìn object)
-cho MỖI click, trên bucket thật mất **hơn hai phút**. Bản hiện tại dùng `StartAfter` đi
-thẳng tới vùng cần. Không có test thì lần refactor sau rất dễ vô tình quay lại kiểu cũ —
-và nó vẫn trả kết quả ĐÚNG, chỉ chậm, nên không có gì báo.
+Vì sao đáng test: bản cũ `paginator.paginate` cả thư mục video cho MỖI click. Trên
+corpus hiện tại hai cách nhanh bằng nhau (đo thật: 860ms vs 896ms — xem docstring
+`get_neighbor_frames`), nhưng cách cũ tăng tuyến tính theo số object của video còn cách
+này thì không. Không có test thì lần refactor sau rất dễ vô tình quay lại kiểu cũ — và
+nó vẫn trả kết quả ĐÚNG, chỉ chậm dần theo kích thước video, nên không có gì báo.
 """
 from __future__ import annotations
 
@@ -59,16 +60,23 @@ def test_mot_moc_tra_ca_frame_hien_tai():
     assert got == [80, 90, 100, 110, 120]
 
 
-def test_mot_moc_khong_doc_ca_video():
-    """Đây là hồi quy cho bug 2 phút. Đường 1 mỏ neo chỉ được tốn vài request nhỏ."""
-    h = helper_for(list(range(0, 20_000, 5)))       # 4000 frame
-    h.get_neighbor_frames(key(10_000), before=25, after=25)
-    calls = h.s3_client.calls
-    assert len(calls) <= 3, f"quá nhiều request: {calls}"
-    # Không có request nào quét từ đầu thư mục.
-    assert all(c["StartAfter"] != "" for c in calls), calls
-    # Request lấy đoạn sau phải nhỏ, không phải 1000.
-    assert min(c["MaxKeys"] for c in calls) <= 26, calls
+def test_so_request_khong_tang_theo_do_dai_video():
+    """Điểm mấu chốt: số request phải KHÔNG phụ thuộc độ dài video.
+
+    Không assert "ít request" chung chung, vì vòng `before` vẫn xin MaxKeys=1000 hai
+    lần — trên video 2-3k object thì bằng luôn cách paginate cũ (đo thật: 860 vs
+    896ms). Thứ duy nhất thật sự khác là ĐỘ CO GIÃN, nên test đúng thứ đó: video dài
+    gấp 25 lần mà số request không được tăng.
+    """
+    small = helper_for(list(range(0, 2_000, 5)))        # 400 frame
+    big = helper_for(list(range(0, 50_000, 5)))         # 10.000 frame
+    small.get_neighbor_frames(key(1_000), before=25, after=25)
+    big.get_neighbor_frames(key(25_000), before=25, after=25)
+    assert len(big.s3_client.calls) == len(small.s3_client.calls), (
+        f"số request tăng theo độ dài video: {len(small.s3_client.calls)} -> "
+        f"{len(big.s3_client.calls)} — đã quay về kiểu paginate cả thư mục?")
+    # Không request nào quét từ đầu thư mục.
+    assert all(c["StartAfter"] != "" for c in big.s3_client.calls), big.s3_client.calls
 
 
 def test_moc_dau_video():

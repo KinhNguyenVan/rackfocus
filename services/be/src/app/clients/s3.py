@@ -355,12 +355,20 @@ class AWSStorageHelper:
 
         Trả CẢ mỏ neo để UI đặt nó ở giữa và đánh dấu `is_current`.
 
-        KHÔNG paginate cả thư mục video. Key S3 zero-pad theo frame nên thứ tự
+        KHÔNG paginate cả thư mục video: key S3 zero-pad theo frame nên thứ tự
         lexicographic cũng là thứ tự frame, dùng `StartAfter` đi thẳng tới vùng cần.
-        Bản cũ paginate toàn bộ một video (hàng chục nghìn object) cho mỗi click; trên
-        bucket thật việc đó mất **hơn hai phút**. Đường 1 mỏ neo ở đây vẫn chỉ tốn đúng
-        1-2 request như trước; chỉ đường 2 mỏ neo mới phải đọc thêm, và cũng chỉ đọc
-        đúng khoảng giữa hai frame chứ không đọc cả video.
+
+        ĐO THẬT trên bucket aic-bucket-2026 (từ VN, video 2352 object), xen kẽ 9 lần:
+
+            StartAfter, 1 mỏ neo    p50 860ms   3 request (MaxKeys 1000/1000/26)
+            StartAfter, 2 mỏ neo    p50 1174ms  3 request
+            paginate cả video       p50 896ms   3 trang
+
+        Tức trên corpus HIỆN TẠI hai cách BẰNG NHAU, không phải nhanh hơn. Lý do: video
+        lớn nhất mới 2809 object (trung bình 1237) = đúng 3 trang, mà vòng `before` dưới
+        đây cũng đọc 2 trang 1000. Thời gian là round-trip S3 (~280ms x 3), không phải
+        số object. Giữ cách này vì nó không đắt hơn và chịu được video lớn hơn, chứ
+        KHÔNG phải vì nó đang nhanh hơn.
         """
         prefix, current_frame_num, width, ext = self._parse_frame_key(current_key)
         if to_key:
