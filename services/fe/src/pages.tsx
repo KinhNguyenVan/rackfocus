@@ -89,6 +89,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   // rerank_candidates (hoặc EXACT_SUBSET nếu tag đủ hẹp). "exact" = ép brute-force
   // toàn candidate/corpus, bỏ qua HNSW hoàn toàn -- chậm hơn, không xấp xỉ.
   const [exactMode, setExactMode] = useState(false);
+  const [submittedExactMode, setSubmittedExactMode] = useState(false);
   const [searchMode, setSearchMode] = useState<"kis" | "temporal">("kis");
   const [event1, setEvent1] = useState("");
   const [event2, setEvent2] = useState("");
@@ -186,7 +187,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     submitted,
     300,
     useLlm,
-    exactMode,
+    submittedExactMode,
   );
 
   const {
@@ -195,7 +196,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     warnings: temporalWarnings,
     loading: temporalLoading,
     error: temporalError,
-  } = useTemporalSearch(submittedEvent1, submittedEvent2, useLlm, exactMode);
+  } = useTemporalSearch(
+    submittedEvent1,
+    submittedEvent2,
+    useLlm,
+    submittedExactMode,
+  );
 
   const results = useMemo(
     () =>
@@ -274,6 +280,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     setService("image");
     setUseLlm(true);
     setExactMode(false);
+    setSubmittedExactMode(false);
     setSubmitted("");
     setSelected([]);
     setOutput("");
@@ -284,6 +291,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     if (searchMode === "temporal") {
       if (event1.trim() && event2.trim()) {
         setSelected([]);
+        setSubmittedExactMode(exactMode);
         setSubmittedEvent1(event1.trim());
         setSubmittedEvent2(event2.trim());
       }
@@ -291,6 +299,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     }
     if (query.trim()) {
       setSelected([]);
+      setSubmittedExactMode(exactMode);
       setSubmitted(query.trim());
     }
   }
