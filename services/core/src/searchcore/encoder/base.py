@@ -1,11 +1,19 @@
 """Interface encoder + tải bundle từ S3.
 
-Encoder query là NGOẠI LỆ DUY NHẤT được chạy trong hot path (Handoff I1), và phải là
-ONNX/CPU đã nạp sẵn trong RAM.
+Encoder query là NGOẠI LỆ DUY NHẤT được chạy trong hot path (Handoff I1), và phải nạp sẵn
+trong RAM (ONNX). Handoff I1 ghi "ONNX/CPU"; giờ chạy được cả GPU — xem
+`text.choose_providers`, mặc định `auto` nên CPU vẫn là đường mặc định khi không có GPU.
 
 Chi phí thực tế phải biết trước: SigLIP so400m text tower = 449.3M param, 53.3 GFLOP mỗi
 query ở batch 1 / seq 64. Chi phí này CỐ ĐỊNH vì SigLIP buộc padding="max_length" — query
-3 chữ trả giá y như query 60 token. Trên 4 core: 170-420ms. Xem docs/search-design.md §1.
+3 chữ trả giá y như query 60 token. Xem docs/search-design.md §1. Đo thật trên M2:
+
+    CPU 1 thread   938ms   0.94 CPU-sec/query
+    CPU 2 thread   517ms   1.04 CPU-sec/query
+    CPU 4 thread   521ms   1.76 CPU-sec/query   <- thêm CPU, latency y nguyên
+
+Batch KHÔNG giúp trên CPU (batch 1/4/8 đều ~0.95 CPU-sec/query) vì đã compute-bound.
+Đó là lý do 53.3 GFLOP/query đẩy sang GPU là thay đổi duy nhất có ý nghĩa về throughput.
 """
 from __future__ import annotations
 
