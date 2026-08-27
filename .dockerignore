@@ -1,11 +1,28 @@
 .git
 .venv
-node_modules
-dist
-__pycache__
-*.faiss
-*.f16
-*.npy
+.env
+.env.*
+
+# `**/` là cần thiết: pattern không có nó chỉ khớp ở gốc context. `node_modules` trần
+# KHÔNG loại được services/fe/node_modules (70MB), và `*.f16` trần không loại được
+# .cache/searchcore/.../visual.f16 (1.4GB).
+**/node_modules
+**/dist
+**/__pycache__
+**/*.faiss
+**/*.f16
+**/*.npy
+**/*.parquet
+
+# Thư mục dữ liệu lớn, đều đã nằm trong .gitignore nên build từ GitHub không thấy chúng.
+# Nhưng `docker build` ở máy local đọc CẢ file untracked, và đây là 4.4GB:
+#   .cache 3.8GB (snapshot + encoder tải từ S3), maps 643MB
+.cache/
+maps/
+data/
 snapshots/
 models/
-data/
+
+# Notebook + log lẫn vào ảnh không có ích gì
+*.ipynb
+*.log

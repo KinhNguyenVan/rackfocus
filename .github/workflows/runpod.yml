@@ -1,0 +1,94 @@
+# Build ảnh GỘP (core+BE+FE+Caddy) cho RunPod, đẩy lên GHCR.
+#
+# Tách khỏi deploy.yml vì khác mục đích: deploy.yml build 3 ảnh riêng cho
+# docker-compose trên VPS; ảnh này là 1 container duy nhất cho RunPod Pod (ở đó không
+# có docker daemon nên không chạy được compose).
+#
+# Chạy trên runner GitHub thay vì máy Mac vì runner là amd64 NATIVE. RunPod là x86_64,
+# còn Mac M-series build ra arm64 -> pod sẽ "exec format error". Build amd64 trên Mac
+# qua QEMU thì mất 15-25 phút.
+name: runpod-image
+
+on:
+  workflow_dispatch:          # bấm tay trong tab Actions
+    inputs:
+      tag:
+        description: "Tag ảnh (mặc định = sha ngắn)"
+        required: false
+      gpu:
+        description: "Build bản GPU (onnxruntime-gpu, ảnh ~4-5GB) thay vì CPU"
+        type: boolean
+        default: false
+  push:
+    tags: ["pod-v*"]          # hoặc: git tag pod-v1 && git push origin pod-v1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hạ chữ thường tên repo
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Chốt tag
+        id: tag
+        # Truyền qua env chứ không nội suy ${{ }} thẳng vào shell: nội suy trực tiếp là
+        # đường tiêm lệnh (input `"; rm -rf /` sẽ chạy thật).
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GPU: ${{ inputs.gpu && '1' || '0' }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            T="$INPUT_TAG"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            T="$GITHUB_REF_NAME"
+          else
+            T="$(git rev-parse --short HEAD)"      # nhánh: tên nhánh có thể chứa "/"
+          fi
+          # Bản CPU và GPU KHÔNG được đè lên cùng một tag: khác gói onnxruntime, mà pod
+          # CPU pull phải bản GPU thì nặng thêm 3GB vô ích.
+          if [ "$GPU" = "1" ]; then
+            echo "value=$T-gpu"   >> "$GITHUB_OUTPUT"
+            echo "moving=gpu"     >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$T"       >> "$GITHUB_OUTPUT"
+            echo "moving=latest"  >> "$GITHUB_OUTPUT"
+          fi
+          echo "gpu=$GPU" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .                          # cần GỐC repo: Dockerfile copy cả 3 service
+          file: ./ops/runpod/Dockerfile
+          platforms: linux/amd64              # RunPod là x86_64
+          push: true
+          build-args: GPU=${{ steps.tag.outputs.gpu }}
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}-pod:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ steps.repo.outputs.name }}-pod:${{ steps.tag.outputs.moving }}
+          # scope riêng cho từng biến thể: chung scope thì layer pip của CPU và GPU
+          # đạp nhau, mỗi lần build lại cài lại từ đầu.
+          cache-from: type=gha,scope=pod-${{ steps.tag.outputs.moving }}
+          cache-to: type=gha,mode=max,scope=pod-${{ steps.tag.outputs.moving }}
+
+      - name: In tên ảnh để dán vào RunPod
+        run: |
+          echo "### Ảnh đã đẩy (GPU=${{ steps.tag.outputs.gpu }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "ghcr.io/${{ steps.repo.outputs.name }}-pod:${{ steps.tag.outputs.value }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "Nhớ đặt package này thành Public (Packages -> Package settings)," >> $GITHUB_STEP_SUMMARY
+          echo "hoặc khai Container Registry Credentials trong RunPod." >> $GITHUB_STEP_SUMMARY
