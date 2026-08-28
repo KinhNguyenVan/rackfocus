@@ -7,6 +7,7 @@ export function useTemporalSearch(
 	event2: string,
 	useLlm = false,
 	exact = false,
+	tags: number[] | null = null,
 ) {
 	const [chains, setChains] = useState<TemporalChain[]>([]);
 	const [totalMs, setTotalMs] = useState<number | null>(null);
@@ -32,7 +33,13 @@ export function useTemporalSearch(
 		setLoading(true);
 		setError(null);
 
-		searchTemporal({ event1: e1, event2: e2, use_llm: useLlm, exact }, controller.signal)
+		// `tags ?? undefined`: JSON.stringify bỏ hẳn khoá undefined, nên BE nhận `tags`
+		// vắng mặt -> None -> giữ hành vi cũ theo use_llm. Gửi [] là chuyện khác hẳn:
+		// "user đã bỏ tick hết, search toàn kho".
+		searchTemporal(
+			{ event1: e1, event2: e2, use_llm: useLlm, exact, tags: tags ?? undefined },
+			controller.signal,
+		)
 			.then((data) => {
 				if (currentRequest !== requestId.current) return;
 				setChains(data.chains ?? []);
@@ -51,7 +58,10 @@ export function useTemporalSearch(
 			});
 
 		return () => controller.abort();
-	}, [event1, event2, useLlm, exact]);
+	// tags là mảng -> mỗi lần render là một identity mới, đưa thẳng vào deps sẽ chạy lại
+	// vô hạn. Serialize thành chuỗi. null (không qua prepare) khác [] (bỏ tick hết) nên
+	// hai cái phải cho ra hai khoá khác nhau.
+	}, [event1, event2, useLlm, exact, tags === null ? "null" : tags.join(",")]);
 
 	return { chains, totalMs, warnings, error, loading };
 }
