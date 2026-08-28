@@ -25,9 +25,9 @@ type Props = {
 };
 
 // Bước 1 của temporal khi BẬT tách event: gõ một câu tiếng Việt -> LLM tách thành N câu
-// tiếng Anh cho CLIP -> user sửa, chọn 2 theo thứ tự, tick tag (nếu useLlm bật) -> search.
-// useLlm=false: BE bỏ hẳn bước chọn tag (tag_names rỗng) -> không có gì để tick, search
-// toàn kho. Tắt tách event thì App dùng TemporalQueryBuilder (2 ô nhập tay) thay component này.
+// tiếng Anh cho CLIP -> user sửa, chọn 2 theo thứ tự -> search. Tag do LLM chọn ở bước
+// prepare được áp thẳng, KHÔNG hiện lên UI cho user chỉnh.
+// Tắt tách event thì App dùng TemporalQueryBuilder (2 ô nhập tay) thay cho component này.
 export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 	const [query, setQuery] = useState("");
 	const [prep, setPrep] = useState<TemporalPrepareResponse | null>(null);
@@ -35,9 +35,6 @@ export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 	// LLM trả về, `texts` giữ bản thực sự đem đi search.
 	const [texts, setTexts] = useState<Record<number, string>>({});
 	const [selected, setSelected] = useState<number[]>([]);
-	// Tag LLM đề xuất chỉ là gợi ý ban đầu -- user tick/untick trước khi search, vì lọc
-	// tag là CỨNG (tag sai = frame đúng không thể với tới, xem docs/search-design.md §4).
-	const [tags, setTags] = useState<number[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +48,6 @@ export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 				setPrep(data);
 				setTexts(Object.fromEntries(data.segments.map((s) => [s.order, s.english_clip_query])));
 				setSelected([]);
-				setTags(data.tags);
 			})
 			.catch((cause: unknown) => {
 				setPrep(null);
@@ -140,46 +136,14 @@ export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 						);
 					})}
 
-					{Object.keys(prep!.tag_names).length > 0 && (
-						<>
-							<label className="form-label small fw-semibold mt-2">
-								Lọc theo lĩnh vực (LLM tự tin {prep!.confidence.toFixed(2)} · nguồn: {prep!.tag_source || "?"}):
-							</label>
-							<div className="d-flex flex-wrap gap-2 mb-2">
-								{Object.entries(prep!.tag_names).map(([id, name]) => {
-									const tid = Number(id);
-									return (
-										<div className="form-check" key={id}>
-											<input
-												className="form-check-input"
-												type="checkbox"
-												checked={tags.includes(tid)}
-												onChange={() =>
-													setTags((cur) =>
-														cur.includes(tid) ? cur.filter((t) => t !== tid) : [...cur, tid],
-													)
-												}
-											/>
-											<label className="form-check-label small">
-												{id} {name}
-											</label>
-										</div>
-									);
-								})}
-							</div>
-							<div className="text-muted small mb-2">
-								Bỏ tick hết = search toàn kho (chậm hơn nhưng không bỏ sót).
-							</div>
-						</>
-					)}
-
 					<button
-						className="btn btn-primary"
+						className="btn btn-outline-secondary"
 						type="button"
 						disabled={!ready}
-						onClick={() => onSearch(texts[selected[0]], texts[selected[1]], tags)}
+						title={ready ? "Tìm chuỗi" : `Còn thiếu ${2 - selected.length} sự kiện`}
+						onClick={() => onSearch(texts[selected[0]], texts[selected[1]], prep?.tags ?? [])}
 					>
-						Tìm chuỗi {ready ? "" : `(còn thiếu ${2 - selected.length})`}
+						<i className="bi bi-search"></i>
 					</button>
 				</>
 			)}
