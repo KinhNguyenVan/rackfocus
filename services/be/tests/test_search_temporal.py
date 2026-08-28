@@ -53,3 +53,102 @@ def test_temporal_use_llm_true_unions_both_events_tags(client, llm):
 def test_temporal_empty_event_rejected(client):
     assert client.post("/api/search/temporal",
                        json={"event1": "", "event2": "x"}).status_code == 422
+
+
+# ── /api/search/temporal/prepare ────────────────────────────────────────────
+
+
+def dual_llm(segment_content, tag_payload=None):
+    """Mock litellm phân biệt HAI lời gọi bằng system prompt.
+
+    Prompt tách đoạn là tiếng Anh ("You are a preprocessing assistant..."), prompt chọn
+    tag là tiếng Việt ("Bạn giúp chọn LĨNH VỰC..."). Không dùng lại được fixture `llm`
+    của conftest vì nó luôn trả JSON object, còn bước tách đoạn cần JSON array.
+
+    Trả về dict đếm để test khẳng định "đúng 2 lời gọi, mỗi bên một cái".
+    """
+    import json
+    import sys
+    import types
+
+    calls = {"segment": 0, "tags": 0}
+
+    async def acompletion(**kwargs):
+        if "preprocessing assistant" in kwargs["messages"][0]["content"]:
+            calls["segment"] += 1
+            content = segment_content
+        else:
+            calls["tags"] += 1
+            content = json.dumps({"tags": [], "enriched": "", "confidence": 1.0,
+                                  **(tag_payload or {})})
+        msg = types.SimpleNamespace(content=content)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg, finish_reason="stop")])
+
+    sys.modules["litellm"] = types.SimpleNamespace(acompletion=acompletion)
+    return calls
+
+
+SEG_TWO = """[
+  {"order": 1, "english_clip_query": "A fish placed on a scale."},
+  {"order": 2, "english_clip_query": "A person holding a fish."}
+]"""
+
+
+def test_prepare_tra_ve_doan_va_tag(client, llm):
+    dual_llm(SEG_TWO, {"tags": [0, 1], "confidence": 0.9})
+    r = client.post("/api/search/temporal/prepare",
+                    json={"query": "cá được cân, sau đó người cầm đuôi cá"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert [s["order"] for s in d["segments"]] == [1, 2]
+    assert d["segments"][0]["english_clip_query"] == "A fish placed on a scale."
+    # `>=` chứ không `==`: enrich.decide_tags còn BÙ THÊM tag mà guard regex nhận ra
+    # (services/be/src/app/services/enrich.py::decide_tags nhánh 3), nên danh sách cuối
+    # có thể rộng hơn tag LLM trả. Cái cần chứng minh là tag của LLM có đi qua được.
+    assert set(d["tags"]) >= {0, 1}
+    assert d["confidence"] == 0.9
+    assert d["warnings"] == []
+
+
+def test_prepare_goi_dung_hai_llm(client, llm):
+    calls = dual_llm(SEG_TWO)
+    client.post("/api/search/temporal/prepare", json={"query": "x sau đó y"})
+    assert calls == {"segment": 1, "tags": 1}
+
+
+def test_prepare_tra_ve_ca_vocab_de_user_tick_them(client, llm):
+    """tag_names phải là CẢ vocab, không chỉ tag đã chọn — UI cần tick THÊM vào."""
+    dual_llm(SEG_TWO, {"tags": [0]})
+    d = client.post("/api/search/temporal/prepare", json={"query": "x sau đó y"}).json()
+    # conftest VOCAB có 5 tag; khoá JSON luôn là chuỗi.
+    assert len(d["tag_names"]) == 5
+    assert set(d["tag_names"]) == {"0", "1", "2", "3", "4"}
+
+
+def test_prepare_loi_tach_doan_lui_ve_cau_goc(client, llm):
+    """Hỏng -> 1 đoạn = câu gốc, và BÁO ra bằng warning chứ không bằng nhãn trong dữ liệu."""
+    dual_llm("xin lỗi, tôi không hiểu")
+    d = client.post("/api/search/temporal/prepare",
+                    json={"query": "câu gốc"}).json()
+    assert len(d["segments"]) == 1
+    assert d["segments"][0]["english_clip_query"] == "câu gốc"
+    assert "llm_failed_segment" in d["warnings"]
+
+
+def test_prepare_mot_doan_hop_le_khong_bao_loi(client, llm):
+    """N=1 do LLM trả ĐÚNG (câu không có mốc thời gian) khác N=1 do hỏng.
+
+    Cả hai rẽ vào cùng một nhánh UI (mời chạy KIS), nhưng chỉ nhánh hỏng mới hiện cảnh
+    báo. Không có `warnings` để phân biệt thì UI phải đoán bằng cách so chuỗi.
+    """
+    dual_llm('[{"order": 1, "english_clip_query": "A group of people exercising."}]')
+    d = client.post("/api/search/temporal/prepare",
+                    json={"query": "nhóm người tập thể dục"}).json()
+    assert len(d["segments"]) == 1
+    assert "llm_failed_segment" not in d["warnings"]
+
+
+def test_prepare_query_rong_bi_tu_choi(client):
+    assert client.post("/api/search/temporal/prepare",
+                       json={"query": ""}).status_code == 422
