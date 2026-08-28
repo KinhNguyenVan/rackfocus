@@ -32,6 +32,28 @@ class ProgressPercentage:
             self._pbar.update(bytes_amount)
 
 
+def neighbor_slice_bounds(sorted_frames: list, from_frame: int, to_frame: int,
+                          before: int, after: int) -> tuple:
+    """(start, end) để cắt `sorted_frames[start:end]` -- N khung trước from_frame đến
+    N khung sau to_frame, theo VỊ TRÍ trong danh sách (không phải số học frame, vì
+    keyframe không cách đều nhau).
+
+    to_frame == from_frame tái hiện đúng hành vi 1-mỏ neo cũ của get_neighbor_frames.
+    Thứ tự from/to không quan trọng (chain temporal luôn đúng thứ tự, nhưng lấy
+    min/max ở đây không tốn gì thêm).
+    """
+    def _index(frame: int) -> int:
+        try:
+            return sorted_frames.index(frame)
+        except ValueError:
+            raise ValueError(f"Không tìm thấy frame {frame} trong danh sách S3") from None
+
+    lo, hi = sorted((_index(from_frame), _index(to_frame)))
+    start = max(0, lo - before)
+    end = min(len(sorted_frames), hi + after + 1)
+    return start, end
+
+
 class AWSStorageHelper:
     """Class tổng hợp tất cả các thao tác tương tác với AWS S3 và CloudFront CDN."""
 
@@ -303,6 +325,39 @@ class AWSStorageHelper:
             print(f"❌ Lỗi List Files: {e}")
             return []
 
+    def get_file_urls(
+        self,
+        prefix: str = "",
+        limit: int | None = None,
+        url_type: str = "public",
+        extensions: tuple[str, ...] = (".webp", ".jpg", ".jpeg", ".png"),
+        expiry: int = 3600,
+    ) -> list[str]:
+        """Lấy danh sách URL file trong một prefix để mock dữ liệu frontend.
+
+        `url_type` nhận `public`, `cloudfront` hoặc `presigned`. Với bucket private,
+        dùng `presigned` và nhớ rằng URL sẽ hết hạn sau `expiry` giây.
+        """
+        if url_type not in {"public", "cloudfront", "presigned"}:
+            raise ValueError("url_type phải là public, cloudfront hoặc presigned")
+        if limit is not None and limit < 0:
+            raise ValueError("limit phải >= 0 hoặc None")
+
+        normalized_extensions = tuple(ext.lower() for ext in extensions)
+        keys = [
+            item["Key"]
+            for item in self.list_files(prefix)
+            if not normalized_extensions or item["Key"].lower().endswith(normalized_extensions)
+        ]
+        if limit is not None:
+            keys = keys[:limit]
+
+        if url_type == "cloudfront":
+            return [self.get_cloudfront_url(key) for key in keys]
+        if url_type == "presigned":
+            return [url for key in keys if (url := self.generate_presigned_url(key, expiry))]
+        return [self.get_s3_public_url(key) for key in keys]
+
     def delete_file(self, object_name: str):
         """Xóa 1 file khỏi S3 Bucket."""
         try:
@@ -323,25 +378,42 @@ class AWSStorageHelper:
             print(f"❌ Lỗi tạo Presigned URL: {e}")
             return None
 
-    def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25) -> list:
-        """Tìm keyframe lân cận mà không list toàn bộ thư mục video.
+    def get_neighbor_frames(self, current_key: str, before: int = 25, after: int = 25,
+                            to_key: str | None = None) -> list:
+        """N khung trước `current_key` .. N khung sau `to_key`, kèm mọi khung ở giữa.
 
-        Key S3 được zero-pad theo frame nên thứ tự lexicographic cũng là thứ tự frame.
-        Nhánh cũ paginate toàn bộ một video (hàng chục nghìn object) cho mỗi click; trên
-        bucket thật việc đó mất hơn hai phút. Ở đây nhánh sau dùng ``StartAfter`` trực
-        tiếp, còn nhánh trước mở rộng một cửa sổ số frame tới khi đủ kết quả.
+        `to_key=None` (mặc định) = 1 mỏ neo, hành vi cũ. Hai mỏ neo dành cho ô "xem
+        frames giữa 2 sự kiện" của temporal search, nơi cả hai hit luôn cùng video —
+        nên khác video là lỗi của caller, raise chứ không im lặng.
 
-        Trả cả frame hiện tại để UI đặt nó ở giữa và đánh dấu rõ ràng.
+        Trả CẢ mỏ neo để UI đặt nó ở giữa và đánh dấu `is_current`.
+
+        KHÔNG paginate cả thư mục video: key S3 zero-pad theo frame nên thứ tự
+        lexicographic cũng là thứ tự frame, dùng `StartAfter` đi thẳng tới vùng cần.
+
+        ĐO THẬT trên bucket aic-bucket-2026 (từ VN, video 2352 object), xen kẽ 9 lần:
+
+            StartAfter, 1 mỏ neo    p50 860ms   3 request (MaxKeys 1000/1000/26)
+            StartAfter, 2 mỏ neo    p50 1174ms  3 request
+            paginate cả video       p50 896ms   3 trang
+
+        Tức trên corpus HIỆN TẠI hai cách BẰNG NHAU, không phải nhanh hơn. Lý do: video
+        lớn nhất mới 2809 object (trung bình 1237) = đúng 3 trang, mà vòng `before` dưới
+        đây cũng đọc 2 trang 1000. Thời gian là round-trip S3 (~280ms x 3), không phải
+        số object. Giữ cách này vì nó không đắt hơn và chịu được video lớn hơn, chứ
+        KHÔNG phải vì nó đang nhanh hơn.
         """
-        match = re.match(r"(.*/)(\d+)(\.webp)", current_key)
-        if not match:
-            raise ValueError(f"Định dạng key không hợp lệ: {current_key}")
+        prefix, current_frame_num, width, ext = self._parse_frame_key(current_key)
+        if to_key:
+            to_prefix, to_frame_num, _, _ = self._parse_frame_key(to_key)
+            if to_prefix != prefix:
+                raise ValueError("current_key và to_key phải cùng video")
+        else:
+            to_frame_num = current_frame_num
+        # Không giả định thứ tự: chain temporal luôn đúng thứ tự nhưng min/max không tốn gì.
+        lo_frame, hi_frame = sorted((current_frame_num, to_frame_num))
 
-        prefix, current_frame_str, ext = match.groups()
-        current_frame_num = int(current_frame_str)
-        width = len(current_frame_str)
-
-        def entries(response) -> list[tuple[int, str]]:
+        def entries(response) -> list:
             found = []
             for obj in response.get("Contents", []):
                 key = obj["Key"]
@@ -350,42 +422,68 @@ class AWSStorageHelper:
                     found.append((int(item.group(1)), key))
             return found
 
-        previous: list[tuple[int, str]] = []
+        def key_at(frame: int) -> str:
+            return f"{prefix}{frame:0{width}d}{ext}"
+
+        def page(start_after: str, max_keys: int) -> list:
+            return entries(self.s3_client.list_objects_v2(
+                Bucket=self.bucket, Prefix=prefix,
+                StartAfter=start_after, MaxKeys=max_keys))
+
+        # frame -> key. Gom vào dict vì các đoạn dưới có thể chồng lấn nhau.
+        found: dict = {}
+
+        # ── Đoạn TRƯỚC lo_frame: nới cửa sổ số frame tới khi đủ `before` ──
+        # Keyframe không cách đều nhau (7/shot, shot dài ngắn khác nhau) nên không suy
+        # ra được khoảng cần đọc; 8x đủ cho sampling thường, nới gấp 4 nếu video thưa.
         if before:
-            # 8x đủ cho sampling thưa thông thường; tăng dần nếu video thưa hơn.
             span = max(128, before * 8)
             for _ in range(8):
-                anchor = max(0, current_frame_num - span)
-                start_after = prefix if anchor == 0 else (
-                    f"{prefix}{anchor:0{width}d}{ext}"
-                )
-                response = self.s3_client.list_objects_v2(
-                    Bucket=self.bucket,
-                    Prefix=prefix,
-                    StartAfter=start_after,
-                    MaxKeys=1000,
-                )
-                candidates = [x for x in entries(response) if x[0] < current_frame_num]
-                previous = candidates[-before:]
-                if len(previous) >= before or anchor == 0:
+                anchor = max(0, lo_frame - span)
+                got = [x for x in page(prefix if anchor == 0 else key_at(anchor), 1000)
+                       if x[0] < lo_frame]
+                found.update(got)
+                if len(got) >= before or anchor == 0:
                     break
                 span *= 4
 
-        following: list[tuple[int, str]] = []
-        if after:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket,
-                Prefix=prefix,
-                StartAfter=current_key,
-                MaxKeys=max(after, 1),
-            )
-            following = entries(response)[:after]
+        # ── Từ lo_frame trở đi ──
+        # StartAfter loại chính nó nên phải lùi 1: key zero-pad cố định width nên
+        # key_at(lo-1) luôn nằm ngay trước key_at(lo) theo lexicographic, dù frame
+        # lo-1 không tồn tại thật.
+        start_after = prefix if lo_frame == 0 else key_at(lo_frame - 1)
+        if lo_frame == hi_frame:
+            # Đường 1 mỏ neo: đúng 1 request nhỏ, y như trước khi có temporal search.
+            found.update(page(start_after, max(after, 1) + 1))
+        else:
+            # Đường 2 mỏ neo: đọc tới khi vượt hi_frame và đủ `after` khung sau nó.
+            # Chặn 20 vòng: khoảng cách bị TRAKE_MAX_GAP_SEC giới hạn nên thực tế 1-2
+            # vòng là hết, vòng lặp có chặn chỉ để một key lạ không treo request.
+            for _ in range(20):
+                got = page(start_after, 1000)
+                if not got:
+                    break
+                found.update(got)
+                if sum(1 for f, _ in got if f > hi_frame) >= max(after, 1):
+                    break
+                start_after = got[-1][1]
 
-        return [key for _frame, key in (
-            previous
-            + [(current_frame_num, current_key)]
-            + following
-        )]
+        ordered = sorted(found.items())
+        # Cắt theo VỊ TRÍ, không theo số học frame — xem docstring neighbor_slice_bounds.
+        # Hàm này raise nếu mỏ neo không có trên S3, browse.py map thành HTTP 400.
+        start, end = neighbor_slice_bounds([f for f, _ in ordered],
+                                           lo_frame, hi_frame, before, after)
+        return [k for _, k in ordered[start:end]]
+
+    @staticmethod
+    def _parse_frame_key(key: str) -> tuple:
+        """(prefix, frame_num, width, ext). `width` cần để dựng lại key làm mốc
+        StartAfter, `ext` để không hardcode .webp ở hai chỗ."""
+        match = re.match(r"(.*/)(\d+)(\.webp)", key)
+        if not match:
+            raise ValueError(f"Định dạng key không hợp lệ: {key}")
+        prefix, frame_str, ext = match.groups()
+        return prefix, int(frame_str), len(frame_str), ext
 
 
 # ==========================================

@@ -110,3 +110,25 @@ async def search(vector, *, top_k: int, tags=None, request_id: str = "",
         with_payload=with_payload,
     )
     return await _search.Search(req, timeout=timeout)
+
+
+async def search_temporal(vec1, vec2, *, tags=None, request_id: str = "",
+                          exact: bool = False, top_k: int | None = None,
+                          with_payload: bool = True, timeout: float = 2.0):
+    """SearchTemporalRequest chỉ có MỘT Filter cho cả request (không phải 1/event) --
+    `tags` ở đây phải là hợp của tag cả 2 event (BE tự union trước khi gọi hàm này).
+    `exact=True` áp cho CẢ hai nhánh tìm candidate mỗi event, giống search() thường."""
+    req = pb.SearchTemporalRequest(
+        ctx=_ctx(request_id),
+        events=[
+            pb.TemporalEvent(query=[pb.QueryPart(vector=cpb.Vector(values=list(vec1)))]),
+            pb.TemporalEvent(query=[pb.QueryPart(vector=cpb.Vector(values=list(vec2)))]),
+        ],
+        top_k=top_k or 0,
+        filter=cpb.Filter(
+            tags=list(tags or []),
+            strategy=cpb.FILTER_STRATEGY_EXACT_SUBSET if exact else cpb.FILTER_STRATEGY_UNSPECIFIED,
+        ),
+        with_payload=with_payload,
+    )
+    return await _search.SearchTemporal(req, timeout=timeout)

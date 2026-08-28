@@ -8,6 +8,7 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.superpowers/
 
 # stub sinh từ proto — không commit, chạy `make proto`
 services/core/src/searchcore/pb/*

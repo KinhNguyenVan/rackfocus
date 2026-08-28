@@ -114,15 +114,23 @@ def serve() -> None:
     apb_grpc.add_AdminServiceServicer_to_server(
         AdminServiceServicer(holder, encoder, cfg, loader=load_snapshot), server)
 
-    os.makedirs(os.path.dirname(cfg.socket_path), exist_ok=True)
-    if os.path.exists(cfg.socket_path):
-        os.remove(cfg.socket_path)
-    server.add_insecure_port(f"unix://{cfg.socket_path}")
+    unix_ok = False
+    try:
+        os.makedirs(os.path.dirname(cfg.socket_path), exist_ok=True)
+        if os.path.exists(cfg.socket_path):
+            os.remove(cfg.socket_path)
+        server.add_insecure_port(f"unix://{cfg.socket_path}")
+        unix_ok = True
+    except Exception as ex:  # noqa: BLE001
+        # gRPC trên Windows native không hỗ trợ AF_UNIX -> chỉ chạy TCP.
+        log.warning("không bind được unix socket %s (%s) — chỉ chạy TCP.",
+                    cfg.socket_path, type(ex).__name__)
     server.add_insecure_port(f"[::]:{cfg.tcp_port}")
 
     server.start()
-    os.chmod(cfg.socket_path, 0o666)
-    log.info("sẵn sàng — unix:%s và tcp:%d", cfg.socket_path, cfg.tcp_port)
+    if unix_ok:
+        os.chmod(cfg.socket_path, 0o666)
+    log.info("sẵn sàng — %stcp:%d", f"unix:{cfg.socket_path} và " if unix_ok else "", cfg.tcp_port)
 
     def _stop(signum, _frame):
         log.info("nhận signal %s, dừng...", signum)

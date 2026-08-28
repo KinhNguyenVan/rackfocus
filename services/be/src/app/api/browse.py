@@ -91,10 +91,14 @@ def neighbors(
     key: str = Query(..., description="keyframe_url đầy đủ hoặc S3 key"),
     before: int = Query(25, ge=0, le=200),
     after: int = Query(25, ge=0, le=200),
+    to_key: str | None = Query(
+        None, description="keyframe_url/S3 key thứ 2, cùng video -- trả về tất cả "
+        "frame giữa `key` và `to_key` cộng before/after. Rỗng = hành vi 1-mỏ neo cũ."),
 ) -> dict:
     helper = _get_helper()
     try:
         s3_key = _to_key(helper, key)
+        s3_to_key = _to_key(helper, to_key) if to_key else None
         match = _KEYFRAME_RE.fullmatch(s3_key)
         assert match is not None
         group = match.group("group")
@@ -102,7 +106,8 @@ def neighbors(
         current_frame = int(match.group("frame"))
         scenes_key = f"Keyscence_{group}/keyscence/{video}/scenes.json"
 
-        neighbor_keys = helper.get_neighbor_frames(s3_key, before=before, after=after)
+        neighbor_keys = helper.get_neighbor_frames(
+            s3_key, before=before, after=after, to_key=s3_to_key)
         scenes = _load_scenes(scenes_key)
     except ValueError as ex:
         raise HTTPException(400, str(ex)) from ex

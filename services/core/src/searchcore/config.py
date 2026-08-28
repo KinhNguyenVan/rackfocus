@@ -11,6 +11,10 @@ def _bool(name: str, default: bool) -> bool:
     return os.getenv(name, "1" if default else "0") == "1"
 
 
+def _float(name: str, default: float) -> float:
+    return float(os.getenv(name, str(default)))
+
+
 @dataclass(frozen=True)
 class Config:
     socket_path: str = os.getenv("SC_SOCKET_PATH", "/var/run/searchcore/sc.sock")
@@ -75,6 +79,23 @@ class Config:
     # tag 59.750 điểm đo được 477ms lúc page fault so với 24ms khi warm — chênh 20x.
     # Ngưỡng này phụ thuộc RAM còn trống của máy, đổi máy phải đo lại điểm vỡ.
     exact_subset_max: int = _int("EXACT_SUBSET_MAX", 100_000)
+
+    # ── TRAKE (docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md) ──────
+    # Top-K candidate rows per event BEFORE joining by video — bounds join cost,
+    # not the whole corpus (a full brute-force rerank per event was already measured
+    # as too slow for a single query; doing it twice would be worse).
+    trake_candidates_per_event: int = _int("TRAKE_CANDIDATES_PER_EVENT", 500)
+    trake_max_pairs_per_video: int = _int("TRAKE_MAX_PAIRS_PER_VIDEO", 1)
+    # Hard floor on (t2 - t1): pairs closer together (including negative = order
+    # violated) are excluded entirely, never scored. Also doubles as the decay's
+    # zero-penalty reference point.
+    trake_min_gap_sec: float = _float("TRAKE_MIN_GAP_SEC", 5.0)
+    # Hard ceiling on (t2 - t1): pairs further apart are excluded entirely.
+    trake_max_gap_sec: float = _float("TRAKE_MAX_GAP_SEC", 60.0)
+    trake_lambda: float = _float("TRAKE_LAMBDA", 0.0173)
+    trake_sim_weight: float = _float("TRAKE_SIM_WEIGHT", 0.8)
+    trake_time_weight: float = _float("TRAKE_TIME_WEIGHT", 0.2)
+    trake_top_k_chains: int = _int("TRAKE_TOP_K_CHAINS", 20)
 
     # ── Đồng thời (docs/search-design.md §7) ─────────────────────────
     # Encoder tốn 53.3 GFLOP/query. 8 worker x 4 BLAS thread trên 4 vCPU = 8x
