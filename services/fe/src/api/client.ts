@@ -1,4 +1,4 @@
-import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
+import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalPrepareResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
 import { mockNeighbors, mockSearch, mockTemporalSearch } from "./mock";
 
 const USE_MOCK = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_USE_MOCK !== "false";
@@ -65,4 +65,23 @@ export async function searchTemporal(
 	}
 
 	return response.json() as Promise<TemporalSearchResponse>;
+}
+
+export async function prepareTemporal(
+	query: string,
+	signal?: AbortSignal,
+): Promise<TemporalPrepareResponse> {
+	const response = await fetch("/api/search/temporal/prepare", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ query }),
+		signal,
+	});
+
+	if (!response.ok) {
+		const detail = await response.text();
+		throw new Error(detail || `Prepare failed (${response.status})`);
+	}
+
+	return response.json() as Promise<TemporalPrepareResponse>;
 }

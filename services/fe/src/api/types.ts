@@ -71,6 +71,9 @@ export type TemporalSearchRequest = {
 	use_llm?: boolean;
 	exact?: boolean;
 	top_k?: number;
+	// Bỏ trống = "không qua prepare, để BE quyết theo use_llm". [] = "user đã bỏ tick
+	// hết, search toàn kho". Hai cái này KHÁC nhau — đừng gửi [] thay cho "không biết".
+	tags?: number[];
 };
 
 export type TemporalChain = {
@@ -84,6 +87,27 @@ export type TemporalSearchResponse = {
 	chains: TemporalChain[];
 	warnings: string[];
 	tags_used: number[];
+	snapshot_ver: string;
+	timings_ms: Record<string, number>;
+};
+
+// Khớp services/be/src/app/api/search_temporal.py — PrepareResponse.
+export type TemporalSegment = {
+	// Thứ tự thời gian LLM suy ra, đánh lại từ 1 ở BE. Không có `label`: prompt cấm mang
+	// nhãn nguồn (E1, "Sự kiện 1") sang output.
+	order: number;
+	english_clip_query: string;
+};
+
+export type TemporalPrepareResponse = {
+	segments: TemporalSegment[];
+	tags: number[];
+	// Khoá JSON luôn là chuỗi: BE khai dict[int, str] nhưng tới đây thành {"3": "..."}.
+	// Tra cứu phải là tag_names[String(id)] — tag_names[id] với id số sẽ ra undefined.
+	tag_names: Record<string, string>;
+	confidence: number;
+	tag_source: string;
+	warnings: string[];
 	snapshot_ver: string;
 	timings_ms: Record<string, number>;
 };
