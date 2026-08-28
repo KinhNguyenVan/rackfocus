@@ -63,8 +63,31 @@ print('EP có sẵn:', o.get_available_providers()); \
 assert 'CUDAExecutionProvider' in o.get_available_providers(), 'thiếu CUDA EP'"; \
     fi
 
-COPY services/core/src/ /app/core/src/
-COPY services/be/src/   /app/be/src/
+# Giữ NGUYÊN cây đường dẫn của repo (services/{core,be}/src) thay vì làm phẳng thành
+# /app/{core,be}/src: scripts/gen_proto.sh ghi thẳng vào services/core/src/searchcore/pb
+# và services/be/src/app/pb. Layout phẳng buộc phải chép lại logic sinh stub vào đây,
+# và hai bản đó sẽ lệch nhau lúc nào không biết.
+COPY services/core/src/ /app/services/core/src/
+COPY services/be/src/   /app/services/be/src/
+
+# Sinh stub gRPC TRONG lúc build. BẮT BUỘC: pb/ nằm trong .gitignore
+# (services/{core/src/searchcore,be/src/app}/pb/*) nên runner GitHub clone từ git là
+# KHÔNG có nó, và BE chết ngay khi import:
+#
+#   File "/app/be/src/app/clients/searchcore.py", line 14, in <module>
+#     from ..pb.searchcore.v1 import admin_pb2 as apb
+#   ModuleNotFoundError: No module named 'app.pb'
+#
+# Build ở máy dev thì KHÔNG lộ ra lỗi này: docker đọc working tree nên nó gói luôn pb/
+# đã sinh sẵn (file untracked). Đúng kiểu "chạy được trên máy tôi". CI đã làm bước này
+# từ đầu (ci.yml, job test) — chỉ Dockerfile là quên.
+COPY proto/ /app/proto/
+COPY scripts/gen_proto.sh /app/scripts/gen_proto.sh
+RUN bash scripts/gen_proto.sh \
+ && python -c "import sys; sys.path[:0]=['/app/services/core/src','/app/services/be/src']; \
+import searchcore.pb.searchcore.v1.search_pb2, app.pb.searchcore.v1.admin_pb2; \
+print('stub gRPC import OK')"
+
 COPY --from=fe /fe/dist/ /srv/
 COPY ops/runpod/Caddyfile  /etc/caddy/Caddyfile
 COPY ops/runpod/start.sh   /usr/local/bin/start.sh
@@ -73,7 +96,7 @@ COPY ops/runpod/gpu_parity.py /app/ops/gpu_parity.py
 RUN chmod +x /usr/local/bin/start.sh
 
 # Hai package không đụng tên nhau (`searchcore` vs `app`) nên gộp PYTHONPATH được.
-ENV PYTHONPATH=/app/core/src:/app/be/src \
+ENV PYTHONPATH=/app/services/core/src:/app/services/be/src \
     PYTHONUNBUFFERED=1 \
     SC_STUB_MODE=0 \
     SC_SOCKET_PATH=/var/run/searchcore/sc.sock \
