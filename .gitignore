@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env
 node_modules/
+.npm-cache/
 dist/
 .pytest_cache/
 .ruff_cache/

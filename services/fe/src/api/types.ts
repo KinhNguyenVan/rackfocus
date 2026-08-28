@@ -64,6 +64,23 @@ export type NeighborsResponse = {
 	playback_source: "scene_clip";
 };
 
+// Khớp services/be/src/app/schemas/transcript.py — GET /api/transcript/suggest.
+export type TranscriptSuggestItem = {
+	video_name: string;
+	scene_idx: number;
+	start_sec: number;
+	end_sec: number;
+	clip_url: string;
+	keyframe_url: string;
+	// Đoạn lời thoại quanh keyword, keyword bọc [ ] để FE tự highlight (không dùng innerHTML).
+	snippet: string;
+};
+
+export type TranscriptSuggestResponse = {
+	query: string;
+	items: TranscriptSuggestItem[];
+};
+
 // Khớp services/be/src/app/api/search_temporal.py.
 export type TemporalSearchRequest = {
 	event1: string;
