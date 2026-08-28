@@ -43,4 +43,24 @@
 			file_server
 		}
 	}
+
+	# ── Cửa sổ BE chưa lên: /ping PHẢI là 204, KHÔNG được là 502 ────────────────
+	# Caddy nghe được sau ~2s, còn uvicorn cần thêm 2-4s để import (litellm/boto3/grpc
+	# nặng). Trong khoảng đó reverse_proxy nhận "connection refused" và trả 502.
+	#
+	# 502 ở /ping là lỗi CHÍ TỬ trên RunPod Serverless: LB coi worker là hỏng, huỷ nó,
+	# dựng worker mới -> vòng nạp 3.8GB bắt đầu lại -> lặp vô tận. Health check của họ
+	# chạy mỗi ~1.1s nên gần như chắc chắn đụng cửa sổ này ở MỌI lần worker khởi động.
+	#
+	# Đo tại chỗ trên đúng ảnh này (log worker thật cũng cho y hệt):
+	#   t+2s  không kết nối được   t+4s  502 (<- chỗ chết người)   t+6s  204
+	#
+	# Trả 204 = "đang khởi tạo", đúng ngữ nghĩa: worker CHƯA hỏng, chỉ chưa xong.
+	handle_errors {
+		@ping path /ping
+		respond @ping 204
+
+		# Đường khác giữ nguyên mã lỗi thật, đừng che.
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
 }
