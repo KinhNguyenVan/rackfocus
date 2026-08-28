@@ -393,6 +393,39 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     }
   }
 
+  function exportCsv() {
+    if (!selected.length)
+      return alert(`${task.toUpperCase()}: Cần chọn ít nhất 1 frame.`);
+
+    const first = selected[0];
+    let rows: string[];
+    if (task === "kis") {
+      rows = selected.map((item) => `${item.video},${item.frame}`);
+    } else if (task === "qa") {
+      if (selected.length !== 1 || !qaAnswer)
+        return alert("QA: Cần chọn đúng 1 frame và nhập answer.");
+      const escapedAnswer = qaAnswer.replace(/"/g, '""');
+      const csvAnswer = /[",\r\n]/.test(qaAnswer)
+        ? `"${escapedAnswer}"`
+        : qaAnswer;
+      rows = [`${first.video},${first.frame},${csvAnswer}`];
+    } else {
+      if (!selected.every((item) => item.video === first.video))
+        return alert("Trake: Tất cả frame phải cùng 1 video.");
+      rows = [`${first.video},${selected.map((item) => item.frame).join(",")}`];
+    }
+
+    const blob = new Blob([`${rows.join("\n")}\n`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `submission-${task}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   const send = () => {
     if (!output)
       return alert("Vui lòng xuất kết quả trước khi gửi sang trang nộp bài.");
@@ -754,6 +787,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         onClick={exportResult}
                       >
                         <i className="bi bi-check2-circle"></i> Xuất kết quả
+                      </button>
+                      <button
+                        className="btn btn-outline-success"
+                        onClick={exportCsv}
+                      >
+                        <i className="bi bi-filetype-csv"></i> Xuất CSV
                       </button>
                       <button
                         className="btn btn-outline-primary"
