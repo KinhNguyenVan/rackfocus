@@ -61,11 +61,11 @@ Thuần logic + một lời gọi LLM. Không HTTP, không core gRPC — test ch
 
 - [ ] **Step 1: Chuyển prompt vào package BE**
 
-`prompt.yaml` hiện chưa được git theo dõi (untracked), nên đây là move file thường, không phải `git mv`:
-
 ```bash
-mv prompt.yaml services/be/src/app/services/segment_prompt.txt
+git mv prompt.yaml services/be/src/app/services/segment_prompt.txt
 ```
+
+Dùng `git mv` (file đã được commit ở gốc repo) để git giữ lịch sử nội dung qua lần đổi chỗ này — prompt còn được sửa tiếp, `git log --follow` trên file mới sẽ cần nó.
 
 Nội dung **không sửa một chữ nào**. Đổi đuôi `.yaml` → `.txt` vì file thực chất là văn bản thuần, không phải YAML (nó chưa từng được parse bằng YAML — `run_prompt.py` đọc bằng `read_text()`).
 
@@ -374,11 +374,11 @@ git add services/be/src/app/services/segment_prompt.txt \
         services/be/src/app/services/segment.py \
         services/be/tests/test_segment.py \
         run_prompt.py
-git rm --cached prompt.yaml 2>/dev/null || true
+git status --short   # phải thấy R (rename) cho prompt.yaml -> segment_prompt.txt
 git commit -m "feat(be): service tách câu truy vấn thành N đoạn tiếng Anh cho CLIP"
 ```
 
-`prompt.yaml` chưa từng được track nên `git rm --cached` sẽ báo lỗi và bị `|| true` nuốt — đó là chủ ý, để lệnh chạy được cả hai trường hợp.
+`run_prompt.py` chưa được track — lần `git add` này đưa nó vào luôn. Nó là harness chạy prompt bằng tay mà `CLAUDE.md` đã ghi trong sơ đồ thư mục, và nó đọc chính file prompt vừa chuyển chỗ, nên để untracked là để một tham chiếu chết nằm ngoài repo. Không có secret trong file (key đọc từ `os.environ`).
 
 ---
 
