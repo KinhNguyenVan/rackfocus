@@ -174,16 +174,16 @@ def test_no_candidates_for_event_returns_empty_with_warning(snap, monkeypatch):
     from searchcore.search import SearchResult
 
     empty = SearchResult(rows=np.empty(0, dtype=np.int64), scores=np.empty(0, dtype=np.float32))
+    event2_vec = q(snap, 12)
 
     def fake_search_with_fallback(snap_, qvec, **kw):
-        # trả rỗng cho MỌI lời gọi thứ hai trở đi (event2), giữ event1 bình thường
-        fake_search_with_fallback.calls += 1
-        if fake_search_with_fallback.calls == 2:
+        # trả rỗng cho event2 cụ thể (khớp theo vector, không theo THỨ TỰ gọi -- hai
+        # event chạy trên 2 thread song song nên thứ tự gọi không còn đoán trước được)
+        if np.array_equal(qvec, event2_vec):
             return empty
         from searchcore.search import search_with_fallback as real
         return real(snap_, qvec, **kw)
 
-    fake_search_with_fallback.calls = 0
     monkeypatch.setattr(T, "search_with_fallback", fake_search_with_fallback)
 
     res = T.search_temporal(

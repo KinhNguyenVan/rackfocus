@@ -11,11 +11,20 @@ xếp hạng kết quả) -- nhưng CÓ giữ lại ý tưởng PAIRS_PER_VIDEO 
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from .search import search_with_fallback
+
+# Event1/event2 search độc lập, cả hai đều là lời gọi FAISS/BLAS (code native, nhả GIL)
+# -- chạy trên 2 thread riêng thay vì gọi lần lượt. An toàn: search() chỉ ĐỌC `snap`
+# (giống hệt kiểu truy cập đồng thời đã dùng khi nhiều request gRPC cùng đọc chung
+# snapshot qua IndexHolder). Pool ở mức module để trả phí tạo thread một lần, không phải
+# mỗi request; giới hạn 2 -- đó là mức song song hữu ích tối đa cho hàm này, không phải
+# pool dùng chung.
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trake-search")
 
 
 @dataclass
@@ -48,12 +57,13 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
     warnings: list[str] = []
 
     t0 = time.perf_counter()
-    r1 = search_with_fallback(snap, qvec1, top_k=candidates_per_event, tags=tags,
-                              exact_max=exact_max, rerank_candidates=rerank_candidates,
-                              requested_strategy=requested_strategy)
-    r2 = search_with_fallback(snap, qvec2, top_k=candidates_per_event, tags=tags,
-                              exact_max=exact_max, rerank_candidates=rerank_candidates,
-                              requested_strategy=requested_strategy)
+    f1 = _executor.submit(search_with_fallback, snap, qvec1, top_k=candidates_per_event,
+                          tags=tags, exact_max=exact_max, rerank_candidates=rerank_candidates,
+                          requested_strategy=requested_strategy)
+    f2 = _executor.submit(search_with_fallback, snap, qvec2, top_k=candidates_per_event,
+                          tags=tags, exact_max=exact_max, rerank_candidates=rerank_candidates,
+                          requested_strategy=requested_strategy)
+    r1, r2 = f1.result(), f2.result()
     t["search_ms"] = (time.perf_counter() - t0) * 1000
 
     # Ghép warnings + tags_used của cả hai lần search_with_fallback -- trước đây bị bỏ
@@ -95,21 +105,40 @@ def search_temporal(snap, qvec1: np.ndarray, qvec2: np.ndarray, *, tags=None,
         warnings.append("temporal_no_common_video")
         return TemporalResult(warnings=warnings, timings_ms=t, tags_used=tags_used)
 
+    # Ghép cặp bằng broadcast numpy thay vì vòng lặp Python lồng nhau: candidates_per_event
+    # mặc định 500, nên một video có đủ ứng viên cả hai bên là 500x500 = 250k cặp cần so
+    # dt -- vòng lặp Python thuần cỡ đó tốn hàng chục ms, đáng kể so với ngân sách
+    # 100-200ms. Tính dt/decay/score cho CẢ ma trận n1 x n2 bằng C (numpy), rồi chỉ lọc +
+    # tạo Chain cho phần thật sự giữ lại (<= max_pairs_per_video), giống cách _rerank()
+    # trong search.py dùng argpartition thay vì sort toàn bộ.
     pool: list[Chain] = []
     for video in common:
-        video_pairs: list[Chain] = []
-        for row1, sim1, time1 in by_video1[video]:
-            for row2, sim2, time2 in by_video2[video]:
-                dt = time2 - time1
-                if dt <= 0 or dt < min_gap_sec or dt > max_gap_sec:
-                    continue
-                decay = float(np.exp(-lam * (dt - min_gap_sec)))
-                score = sim_weight * (sim1 + sim2) + time_weight * decay
-                video_pairs.append(Chain(video_name=video, row1=row1, row2=row2,
-                                         score=score, sim1=sim1, sim2=sim2,
-                                         t1=time1, t2=time2))
-        video_pairs.sort(key=lambda c: -c.score)
-        pool.extend(video_pairs[:max_pairs_per_video])
+        rows1, sims1, times1 = (np.asarray(x) for x in zip(*by_video1[video]))
+        rows2, sims2, times2 = (np.asarray(x) for x in zip(*by_video2[video]))
+
+        dt = times2[None, :] - times1[:, None]
+        valid = (dt > 0) & (dt >= min_gap_sec) & (dt <= max_gap_sec)
+        if not valid.any():
+            continue
+
+        decay = np.exp(-lam * (dt - min_gap_sec))
+        score = sim_weight * (sims1[:, None] + sims2[None, :]) + time_weight * decay
+
+        i_idx, j_idx = np.nonzero(valid)          # thứ tự (i tăng dần, j tăng dần trong i)
+        pair_scores = score[i_idx, j_idx]
+
+        k = min(max_pairs_per_video, pair_scores.size)
+        top = np.argpartition(-pair_scores, k - 1)[:k]
+        # kind="stable" để hoà điểm giữ đúng thứ tự sinh ra (i tăng dần, j tăng dần) --
+        # khớp hành vi sort ổn định (list.sort) của bản vòng lặp Python cũ.
+        top = top[np.argsort(-pair_scores[top], kind="stable")]
+
+        pool.extend(
+            Chain(video_name=video, row1=int(rows1[i]), row2=int(rows2[j]),
+                 score=float(pair_scores[t]), sim1=float(sims1[i]), sim2=float(sims2[j]),
+                 t1=float(times1[i]), t2=float(times2[j]))
+            for t, i, j in zip(top, i_idx[top], j_idx[top])
+        )
 
     if not pool:
         warnings.append("temporal_no_valid_gap")
