@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from ..clients import searchcore
 from ..config import get_settings
+from ..services import cache
 from ..services import enrich as enrich_svc
 from ..services import segment as segment_svc
 from ..services import tagvocab
@@ -108,13 +109,36 @@ async def prepare(req: PrepareRequest) -> PrepareResponse:
 
     vocab, snap_ver = await tagvocab.get(st)
 
+    # KHÔNG cache khi lỗi (giống api/search.py::_enrich): lỗi thường là tạm thời
+    # (timeout, rate limit) mà TTL tới 1 giờ — cache lại là khoá cứng bản lùi "một đoạn =
+    # câu gốc" / "không lọc tag" cho cả phiên thi.
+    async def _segment() -> segment_svc.Segmentation:
+        key = cache.segment_key(req.query, st.llm_model, st.llm_max_tokens)
+        hit = cache.segment.get(key)
+        if hit is not None:
+            return hit
+        result = await segment_svc.segment(req.query, st)
+        if result.ok:
+            cache.segment.set(key, result)
+        return result
+
     async def _maybe_enrich() -> enrich_svc.Enrichment:
         if not req.use_llm:
             return enrich_svc.Enrichment(enriched_text=req.query, tag_source="disabled")
-        return await enrich_svc.enrich(req.query, vocab, st)
+        key = cache.enrichment_key(req.query, snap_ver, st.llm_model, st.llm_max_tags,
+                                   st.llm_tag_confidence_min)
+        hit = cache.enrichment.get(key)
+        if hit is not None:
+            return hit
+        result = await enrich_svc.enrich(req.query, vocab, st)
+        if result.ok:
+            cache.enrichment.set(key, result)
+        return result
 
+    # Đây là chỗ hai cache riêng biệt trả công: Phân tích lúc TẮT lọc rồi bật lên sau chỉ
+    # tốn đúng lời gọi enrich — segment lấy lại từ cache, không chạy lại.
     segmentation, enrichment = await asyncio.gather(
-        segment_svc.segment(req.query, st),
+        _segment(),
         _maybe_enrich(),
     )
 
@@ -155,19 +179,44 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
     # Tính một lần rồi dùng lại, giống api/search.py:87.
     used_llm = req.tags is None and req.use_llm
 
+    # Cache TỪNG event riêng, không phải chuỗi ghép: sửa một sự kiện rồi tìm lại là thao
+    # tác thường xuyên nhất ở luồng nhập tay, và encode tốn 170-420ms mỗi lần
+    # (docs/search-design.md §1). Khoá theo event thì event không đổi vẫn dùng lại được.
+    async def _encode(text: str):
+        key = cache.embedding_key(text, snap_ver)
+        hit = cache.embedding.get(key)
+        if hit is not None:
+            return hit
+        vector = await searchcore.encode(text, request_id=rid,
+                                         timeout=st.encode_timeout_s)
+        cache.embedding.set(key, vector)
+        return vector
+
     async def _enrich() -> enrich_svc.Enrichment:
         if not used_llm:
             return enrich_svc.Enrichment()
         # Ghép hai event thành một câu rồi enrich MỘT lần. Xem docstring đầu file: core
         # chỉ nhận một Filter nên chỉ cần một tập tag, và LLM thấy cả chuỗi thì chọn lĩnh
         # vực sát hơn là đoán rời từng nửa.
-        return await enrich_svc.enrich(f"{req.event1}. {req.event2}", vocab, st)
+        #
+        # Khoá cache là chính chuỗi ghép đó -> gạt tắt rồi bật lại lọc không gọi LLM lần
+        # nữa, chỉ lấy lại đúng tập tag cũ.
+        text = f"{req.event1}. {req.event2}"
+        key = cache.enrichment_key(text, snap_ver, st.llm_model, st.llm_max_tags,
+                                   st.llm_tag_confidence_min)
+        hit = cache.enrichment.get(key)
+        if hit is not None:
+            return hit
+        result = await enrich_svc.enrich(text, vocab, st)
+        if result.ok:
+            cache.enrichment.set(key, result)
+        return result
 
     t0 = time.perf_counter()
     try:
         vec1, vec2, enr = await asyncio.gather(
-            searchcore.encode(req.event1, request_id=rid, timeout=st.encode_timeout_s),
-            searchcore.encode(req.event2, request_id=rid, timeout=st.encode_timeout_s),
+            _encode(req.event1),
+            _encode(req.event2),
             _enrich(),
         )
     except grpc.aio.AioRpcError as ex:

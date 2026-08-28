@@ -106,16 +106,20 @@ class FakeEncoder:
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """Xoá cache embedding/enrich trước MỖI test.
+    """Xoá cache embedding/enrich/segment trước MỖI test.
 
     `services/cache.py` giữ cache ở module level nên nó sống xuyên test. Không xoá thì
     test sau dùng cùng câu query nhưng đặt `llm.reply` khác lại nhận kết quả test trước
     đã cache — đúng 5 test đã đỏ khi mới nối cache vào.
+
+    Thêm cache nào vào `cache.py` thì phải thêm vào đây. Quên `segment` đã làm đỏ 2 test
+    prepare (chúng dùng chung câu "x sau đó y").
     """
     from app.services import cache
 
     cache.embedding.clear()
     cache.enrichment.clear()
+    cache.segment.clear()
     yield
 
 

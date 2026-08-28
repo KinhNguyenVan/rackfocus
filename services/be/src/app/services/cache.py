@@ -107,14 +107,21 @@ class TTLCache:
         }
 
 
-# Hai cache riêng, không gộp: encode dùng được cả khi enrich lỗi/bị tắt, và vòng đời
+# Ba cache riêng, không gộp: encode dùng được cả khi enrich lỗi/bị tắt, và vòng đời
 # của chúng khác nhau (đổi prompt chỉ làm hỏng cache enrich, không hỏng cache vector).
+#
+# Tách `segment` khỏi `enrichment` là điều kiện để công tắc lọc tag rẻ: user Phân tích
+# lúc đang TẮT lọc -> chỉ segment chạy và được cache; bật lọc lên sau đó thì chỉ enrich
+# chạy, segment lấy lại từ cache. Gộp một entry {segments, tags} thì bật lọc muộn sẽ kéo
+# theo cả lời gọi segment vô ích (nó là lời gọi ĐẮT hơn -- `segment_prompt.txt` dài hơn
+# hẳn prompt enrich).
 #
 # maxsize lệch nhau vì kích thước entry lệch nhau ~100 lần: một vector là 36.8 KB, còn
 # một `Enrichment` chỉ là vài chuỗi ngắn + list int. 256 vector = ~9 MB, đủ cho một phiên
-# thi mà vẫn nhỏ so với RSS ~32 MB của BE.
+# thi mà vẫn nhỏ so với RSS ~32 MB của BE. `Segmentation` cũng chỉ là vài câu ngắn.
 embedding = TTLCache(maxsize=256, ttl_s=3600.0, name="embedding")
 enrichment = TTLCache(maxsize=2048, ttl_s=3600.0, name="enrichment")
+segment = TTLCache(maxsize=2048, ttl_s=3600.0, name="segment")
 
 
 def embedding_key(text: str, snapshot_ver: str) -> str:
@@ -131,5 +138,19 @@ def enrichment_key(text: str, snapshot_ver: str, model: str, max_tags: int,
     return f"{snapshot_ver}\x00{model}\x00{max_tags}\x00{confidence_min}\x00{normalize(text)}"
 
 
+def segment_key(text: str, model: str, max_tokens: int) -> str:
+    """KHÔNG có `snapshot_ver`, khác hai khoá trên — cố ý.
+
+    Output của segment là câu tiếng Anh cho CLIP, không nhắc tới tag id nào nên không phụ
+    thuộc snapshot. Nhét `snapshot_ver` vào chỉ làm mất sạch cache mỗi lần core swap
+    snapshot mà không đổi lại được tính đúng đắn nào.
+
+    `max_tokens` thì CÓ: nó cắt output giữa chừng, và output bị cắt là JSON hỏng -> lùi về
+    một đoạn = câu gốc. Sửa config xong mà vẫn nhận lại kết quả cắt theo config cũ thì
+    đúng là thứ khoá phải chặn.
+    """
+    return f"{model}\x00{max_tokens}\x00{normalize(text)}"
+
+
 def all_stats() -> list[dict[str, Any]]:
-    return [embedding.stats(), enrichment.stats()]
+    return [embedding.stats(), enrichment.stats(), segment.stats()]

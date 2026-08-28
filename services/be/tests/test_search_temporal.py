@@ -181,6 +181,60 @@ def test_prepare_mac_dinh_van_loc_tag(client, llm):
     assert calls == {"segment": 1, "tags": 1}
 
 
+# ── cache ───────────────────────────────────────────────────────────────────
+
+
+def test_bat_loc_sau_khi_da_phan_tich_chi_ton_them_enrich(client, llm):
+    """Kịch bản chính của hai cache riêng biệt.
+
+    User Phân tích lúc TẮT lọc (chỉ segment chạy), rồi đổi ý bật lọc lên và Phân tích
+    lại. Lần hai chỉ được phép tốn lời gọi ENRICH — segment phải lấy từ cache, vì nó là
+    lời gọi đắt hơn (`segment_prompt.txt` dài hơn hẳn prompt enrich).
+    """
+    calls = dual_llm(SEG_TWO, {"tags": [0, 1]})
+    q = {"query": "cá được cân rồi người cầm đuôi cá"}
+
+    client.post("/api/search/temporal/prepare", json={**q, "use_llm": False})
+    assert calls == {"segment": 1, "tags": 0}
+
+    d = client.post("/api/search/temporal/prepare", json={**q, "use_llm": True}).json()
+    assert calls == {"segment": 1, "tags": 1}   # segment KHÔNG chạy lại
+    assert set(d["tags"]) >= {0, 1}             # mà vẫn có tag
+    assert [s["order"] for s in d["segments"]] == [1, 2]   # đoạn vẫn trả về đủ
+
+
+def test_gat_tat_roi_bat_lai_loc_khong_goi_lai_llm(client, llm):
+    """Gạt tắt/bật công tắc lọc nhiều lần chỉ tốn ĐÚNG một lời gọi enrich.
+
+    Lần bật thứ hai phải lấy lại đúng tập tag cũ từ cache chứ không hỏi LLM lại.
+    """
+    llm.reply = {"tags": [2], "enriched": "", "confidence": 1.0}
+
+    search_temporal(client, use_llm=True)          # bật -> enrich
+    assert llm.calls == 1
+    search_temporal(client, use_llm=False)         # tắt -> không đụng LLM
+    assert llm.calls == 1
+    d = search_temporal(client, use_llm=True)      # bật lại -> cache hit
+    assert llm.calls == 1
+    assert d  # vẫn trả về hợp lệ
+
+
+def test_sua_mot_event_van_dung_lai_vector_event_kia(client, llm):
+    """Cache embedding khoá theo TỪNG event, không theo chuỗi ghép.
+
+    Sửa sự kiện 2 rồi tìm lại thì vector của sự kiện 1 phải được dùng lại — encode tốn
+    170-420ms/lần nên đây là chỗ ăn tiền nhất ở luồng nhập tay.
+    """
+    from app.services import cache
+
+    search_temporal(client, use_llm=False, event1="người cầm micro", event2="khán giả vỗ tay")
+    sau_lan_dau = cache.embedding.stats()["misses"]
+
+    search_temporal(client, use_llm=False, event1="người cầm micro", event2="khán giả đứng dậy")
+    # Chỉ event2 là mới -> đúng 1 miss nữa, event1 lấy từ cache.
+    assert cache.embedding.stats()["misses"] == sau_lan_dau + 1
+
+
 def test_prepare_tra_ve_ca_vocab_de_user_tick_them(client, llm):
     """tag_names phải là CẢ vocab, không chỉ tag đã chọn — UI cần tick THÊM vào."""
     dual_llm(SEG_TWO, {"tags": [0]})

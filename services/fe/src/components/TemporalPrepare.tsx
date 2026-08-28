@@ -20,7 +20,9 @@ type Props = {
 	// Chỉ bật/tắt bước chọn tag, không ảnh hưởng tách đoạn — hiện được component này
 	// nghĩa là công tắc tách event đã bật.
 	useLlm: boolean;
-	onSearch: (event1: string, event2: string, tags: number[]) => void;
+	// `null` = "chưa có tag, BE tự quyết theo use_llm". KHÁC `[]` = "không lọc, search
+	// toàn kho". Xem tagsForSearch bên dưới.
+	onSearch: (event1: string, event2: string, tags: number[] | null) => void;
 	onRunAsKis: (text: string) => void;
 };
 
@@ -58,6 +60,18 @@ export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 
 	const segments = prep?.segments ?? [];
 	const ready = selected.length === 2;
+
+	// Tag phải theo trạng thái công tắc HIỆN TẠI, không theo `prep` chốt lúc bấm Phân
+	// tích. Trước đây luôn gửi `prep.tags` nên gạt công tắc xong bấm tìm là vẫn lọc theo
+	// tag cũ (hoặc vẫn không lọc) — công tắc coi như vô tác dụng.
+	//
+	// Không Phân tích lại khi gạt: làm thế là chạy lại cả segment (lời gọi LLM đắt hơn)
+	// và xoá mất câu user đã sửa + lựa chọn 2 sự kiện.
+	const tagsForSearch = (): number[] | null => {
+		if (!useLlm) return [];                            // tắt lọc -> tường minh không lọc
+		if (prep?.tag_source === "disabled") return null;  // prep lấy lúc đang tắt -> BE tự enrich
+		return prep?.tags ?? null;
+	};
 
 	return (
 		<div className="mb-3">
@@ -141,7 +155,7 @@ export function TemporalPrepare({ useLlm, onSearch, onRunAsKis }: Props) {
 						type="button"
 						disabled={!ready}
 						title={ready ? "Tìm chuỗi" : `Còn thiếu ${2 - selected.length} sự kiện`}
-						onClick={() => onSearch(texts[selected[0]], texts[selected[1]], prep?.tags ?? [])}
+						onClick={() => onSearch(texts[selected[0]], texts[selected[1]], tagsForSearch())}
 					>
 						<i className="bi bi-search"></i>
 					</button>
