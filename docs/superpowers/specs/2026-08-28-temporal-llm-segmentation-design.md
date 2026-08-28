@@ -19,8 +19,10 @@ và tự dịch sang tiếng Anh.
 
 Ba ràng buộc va nhau:
 
-1. `prompt.yaml` trả **N đoạn**, N có thể là 1 ("Full query" khi không có mốc thời gian)
-   hoặc 3–4 (ví dụ 3 trong chính prompt trả `Context` + `E1` + `E2` + `E3`).
+1. `prompt.yaml` trả **N đoạn**, N có thể là 1 (không có mốc thời gian nào) hoặc 3–4 (ví
+   dụ 3 trong chính prompt trả 4 đoạn). Mỗi đoạn chỉ có `order` + `english_clip_query` —
+   prompt nói rõ không mang nhãn nguồn (`E1`, `Sự kiện 1`, ...) sang output, nhãn chỉ để
+   nó biết có bao nhiêu đoạn và theo thứ tự nào.
 2. Core `SearchTemporal` nhận **đúng 2** vector. Đây là ràng buộc cứng của `proto/`.
 3. Lọc tag là **CỨNG** — frame ngoài tag đã chọn là không thể với tới ở bất kỳ
    `ef_search`/`top_k` nào. Đây là lý do temporal hiện mặc định `use_llm=False`.
@@ -76,7 +78,6 @@ Theo đúng hợp đồng của `enrich.py`: **không bao giờ raise**, luôn c
 @dataclass
 class Segment:
     order: int
-    label: str              # "Full query" | "Event 1" | "E1" | "Context" | ...
     english_clip_query: str
 
 @dataclass
@@ -89,8 +90,17 @@ class Segmentation:
 
 `async def segment(query: str, settings) -> Segmentation`
 
-Lỗi/timeout/JSON rác → trả **một** đoạn `Segment(1, "Full query", query)` kèm `error`. Hỏng
-kiểu đó rơi đúng vào nhánh N=1 mà UI đã phải xử lý sẵn (D5) — không cần đường lỗi riêng.
+**Không có trường `label`.** Prompt chốt mỗi đoạn đúng hai trường `order` +
+`english_clip_query`, và cấm mang nhãn nguồn (`E1`, `Sự kiện 1`) sang output — nhãn chỉ là
+tín hiệu cho LLM biết có bao nhiêu đoạn, không phải dữ liệu hiển thị.
+
+Lỗi/timeout/JSON rác → trả **một** đoạn `Segment(1, query)` kèm `error`. Hỏng kiểu đó rơi
+đúng vào nhánh N=1 mà UI đã phải xử lý sẵn (D5) — không cần đường lỗi riêng.
+
+Phân biệt "hỏng" với "đúng là chỉ có 1 đoạn" bằng `error`/`warnings`, **không** bằng một
+nhãn ma thuật trong dữ liệu: N=1 do LLM trả đúng thì `error` rỗng, N=1 do hỏng thì
+`warnings` có `llm_failed_segment`. Cả hai đều rẽ vào cùng một nhánh UI (mời chạy KIS),
+chỉ khác chỗ có hiện cảnh báo hay không.
 
 Parse: `prompt.yaml` yêu cầu trả JSON **array**, không phải object — nên regex bóc là
 `\[.*\]` (`re.DOTALL`), khác `\{.*\}` của `enrich.py`. Bỏ đoạn thiếu `english_clip_query`
@@ -116,7 +126,7 @@ class PrepareRequest(BaseModel):
     query: str = Field(min_length=1)
 
 class PrepareResponse(BaseModel):
-    segments: list[SegmentOut]      # order, label, english_clip_query
+    segments: list[SegmentOut]      # order, english_clip_query
     tags: list[int]                 # tag LLM/guard chọn
     tag_names: dict[int, str]       # {id: "tên hiển thị"} cho toàn vocab
     confidence: float
@@ -173,11 +183,14 @@ chuyển sang temporal mode. Bỏ dòng đó — temporal + LLM giờ là đư�
 
 Câu tiếng Anh cho CLIP — bấm số để chọn 2, theo thứ tự:
 
-  ( )  Context   [ A close-up of a white lion-dance head...        ]
-  (1)  E1        [ Golden dragons fully in frame, spinning.        ]
-  ( )  E2        [ The lion figure's legs landing back on...       ]
-  (2)  E3        [ A mallet striking a bronze gong...              ]
-                   ↑ textarea, sửa được
+  ( )  1.  [ A close-up of a white lion-dance head...        ]
+  (1)  2.  [ Golden dragons fully in frame, spinning.        ]
+  ( )  3.  [ The lion figure's legs landing back on...       ]
+  (2)  4.  [ A mallet striking a bronze gong...              ]
+             ↑ textarea, sửa được
+
+  ^ badge chọn (thứ tự sự kiện)
+       ^ `order` LLM trả (thứ tự thời gian), chỉ để đọc
 
 Lọc theo lĩnh vực (LLM tự tin 0.82 · nguồn: llm):
   [x] 3  Văn hoá - Giải trí      [ ] 5  Thể thao
@@ -227,7 +240,7 @@ prompt chọn tag).
 |---|---|
 | `test_prepare_returns_segments_and_tags` | N đoạn từ mock, kèm `tags`/`tag_names`/`confidence` |
 | `test_prepare_runs_both_llms` | đúng 2 lời gọi litellm |
-| `test_prepare_segment_failure_falls_back_to_full_query` | LLM tách lỗi → 1 đoạn `"Full query"` = câu gốc, `warnings` có `llm_failed_segment` |
+| `test_prepare_segment_failure_falls_back_to_full_query` | LLM tách lỗi → đúng 1 đoạn = câu gốc nguyên văn, `warnings` có `llm_failed_segment` |
 | `test_prepare_bad_json_falls_back` | trả chữ không phải JSON → như trên, không raise |
 | `test_temporal_explicit_tags_skip_llm` | gửi `tags=[0]` → `llm.calls == 0`, tag tới core đúng `[0]` |
 | `test_temporal_empty_tags_means_no_filter` | `tags=[]` → không lọc, **và** không gọi LLM |

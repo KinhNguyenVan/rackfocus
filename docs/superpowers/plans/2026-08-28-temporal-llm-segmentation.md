@@ -26,7 +26,7 @@
 | File | Trách nhiệm | Task |
 |---|---|---|
 | `services/be/src/app/services/segment_prompt.txt` | **Tạo** — `prompt.yaml` chuyển vào đây, ship trong container BE | 1 |
-| `services/be/src/app/services/segment.py` | **Tạo** — gọi LLM tách đoạn, parse JSON array, đường lùi "Full query" | 1 |
+| `services/be/src/app/services/segment.py` | **Tạo** — gọi LLM tách đoạn, parse JSON array, đường lùi 1 đoạn = câu gốc | 1 |
 | `services/be/tests/test_segment.py` | **Tạo** — unit test thuần, không cần core gRPC | 1 |
 | `run_prompt.py` | **Sửa** — trỏ sang đường dẫn prompt mới | 1 |
 | `services/be/src/app/api/search_temporal.py` | **Sửa** — thêm endpoint `prepare`; thêm `tags` vào request search | 2, 3 |
@@ -55,7 +55,7 @@ Thuần logic + một lời gọi LLM. Không HTTP, không core gRPC — test ch
 **Interfaces:**
 - Consumes: `settings` có các thuộc tính `llm_enabled`, `llm_model`, `llm_api_key`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens`, `llm_reasoning_effort` (từ `app.config.Settings`).
 - Produces:
-  - `Segment(order: int, label: str, english_clip_query: str)` — dataclass
+  - `Segment(order: int, english_clip_query: str)` — dataclass. **Không có `label`**: prompt chốt mỗi đoạn đúng hai trường và cấm mang nhãn nguồn (`E1`, `Sự kiện 1`) sang output.
   - `Segmentation(segments: list[Segment], model: str, latency_ms: float, error: str)` — dataclass, có `.ok` property
   - `async def segment(query: str, settings) -> Segmentation` — không bao giờ raise
 
@@ -139,21 +139,35 @@ def mock_litellm(content=None, raises=None):
 @pytest.mark.asyncio
 async def test_tach_nhieu_doan():
     mock_litellm(json.dumps([
-        {"order": 1, "label": "Event 1", "english_clip_query": "A fish placed on a scale."},
-        {"order": 2, "label": "Event 2", "english_clip_query": "A person holding a fish."},
+        {"order": 1, "english_clip_query": "A fish placed on a scale."},
+        {"order": 2, "english_clip_query": "A person holding a fish."},
     ]))
     r = await seg.segment("con cá được cân, sau đó người cầm đuôi cá", fake_settings())
     assert r.ok
-    assert [s.label for s in r.segments] == ["Event 1", "Event 2"]
-    assert r.segments[0].english_clip_query == "A fish placed on a scale."
+    assert [s.english_clip_query for s in r.segments] == [
+        "A fish placed on a scale.", "A person holding a fish."]
+
+
+@pytest.mark.asyncio
+async def test_bo_qua_nhan_nguon_neu_llm_van_tra():
+    """Prompt cấm mang nhãn nguồn sang output, nhưng LLM lỡ trả thì cũng không sao.
+
+    Segment không có chỗ chứa `label` -> khoá thừa bị bỏ im lặng, không được raise.
+    """
+    mock_litellm(json.dumps([
+        {"order": 1, "label": "E1", "english_clip_query": "Golden dragons spinning."},
+    ]))
+    r = await seg.segment("múa lân", fake_settings())
+    assert r.ok
+    assert r.segments[0].english_clip_query == "Golden dragons spinning."
 
 
 @pytest.mark.asyncio
 async def test_order_danh_lai_theo_vi_tri():
     """LLM đánh trùng/nhảy số được; UI dùng order làm khoá nên phải đánh lại."""
     mock_litellm(json.dumps([
-        {"order": 5, "label": "E1", "english_clip_query": "Golden dragons spinning."},
-        {"order": 5, "label": "E2", "english_clip_query": "A mallet striking a gong."},
+        {"order": 5, "english_clip_query": "Golden dragons spinning."},
+        {"order": 5, "english_clip_query": "A mallet striking a gong."},
     ]))
     r = await seg.segment("múa lân", fake_settings())
     assert [s.order for s in r.segments] == [1, 2]
@@ -162,8 +176,8 @@ async def test_order_danh_lai_theo_vi_tri():
 @pytest.mark.asyncio
 async def test_bo_doan_rong():
     mock_litellm(json.dumps([
-        {"order": 1, "label": "E1", "english_clip_query": "   "},
-        {"order": 2, "label": "E2", "english_clip_query": "A mallet striking a gong."},
+        {"order": 1, "english_clip_query": "   "},
+        {"order": 2, "english_clip_query": "A mallet striking a gong."},
     ]))
     r = await seg.segment("múa lân", fake_settings())
     assert len(r.segments) == 1
@@ -171,17 +185,15 @@ async def test_bo_doan_rong():
 
 
 @pytest.mark.asyncio
-async def test_json_rac_thi_lui_ve_full_query():
+async def test_json_rac_thi_lui_ve_cau_goc():
     mock_litellm("xin lỗi, tôi không hiểu")
     r = await seg.segment("câu gốc", fake_settings())
     assert not r.ok
-    assert len(r.segments) == 1
-    assert r.segments[0].label == "Full query"
-    assert r.segments[0].english_clip_query == "câu gốc"
+    assert [s.english_clip_query for s in r.segments] == ["câu gốc"]
 
 
 @pytest.mark.asyncio
-async def test_llm_loi_thi_lui_ve_full_query():
+async def test_llm_loi_thi_lui_ve_cau_goc():
     mock_litellm(raises=TimeoutError("quá thời gian"))
     r = await seg.segment("câu gốc", fake_settings())
     assert not r.ok
@@ -190,8 +202,7 @@ async def test_llm_loi_thi_lui_ve_full_query():
 
 @pytest.mark.asyncio
 async def test_tat_llm_thi_khong_goi_mang():
-    calls = mock_litellm(json.dumps([{"order": 1, "label": "E1",
-                                      "english_clip_query": "x"}]))
+    calls = mock_litellm(json.dumps([{"order": 1, "english_clip_query": "x"}]))
     r = await seg.segment("câu gốc", fake_settings(llm_enabled=False))
     assert calls == []
     assert r.ok
@@ -226,7 +237,7 @@ Chạy SONG SONG với `enrich.py` trong `api/search_temporal.py::prepare` — h
 độc lập trên cùng câu gốc, tổng = max chứ không phải cộng.
 
 Theo đúng hợp đồng của `enrich.py`: KHÔNG BAO GIỜ raise. Lỗi/timeout/JSON rác -> trả đúng
-MỘT đoạn "Full query" = câu gốc, kèm `error`. Hỏng kiểu đó rơi vào nhánh N=1 mà UI đã phải
+MỘT đoạn = câu gốc nguyên văn, kèm `error`. Hỏng kiểu đó rơi vào nhánh N=1 mà UI đã phải
 xử lý sẵn (không tạo được chuỗi, mời chạy KIS), nên không cần đường lỗi riêng.
 """
 from __future__ import annotations
@@ -247,8 +258,9 @@ _SYSTEM = Path(__file__).with_name("segment_prompt.txt").read_text(encoding="utf
 @dataclass
 class Segment:
     order: int
-    label: str          # "Full query" | "Event 1" | "E1" | "Context" | ...
     english_clip_query: str
+    # KHÔNG có `label`. Prompt chốt mỗi đoạn đúng hai trường và nói rõ nhãn nguồn (E1,
+    # "Sự kiện 1", ...) chỉ để LLM biết có bao nhiêu đoạn — không mang sang output.
 
 
 @dataclass
@@ -264,7 +276,13 @@ class Segmentation:
 
 
 def _fallback(query: str) -> list[Segment]:
-    return [Segment(order=1, label="Full query", english_clip_query=query)]
+    """Một đoạn duy nhất = câu gốc nguyên văn.
+
+    Không đánh dấu gì đặc biệt vào dữ liệu: phân biệt "hỏng" với "đúng là chỉ có 1 đoạn"
+    bằng `Segmentation.error` (rồi thành warning `llm_failed_segment`), không bằng một
+    nhãn ma thuật mà UI phải so chuỗi để đoán ra.
+    """
+    return [Segment(order=1, english_clip_query=query)]
 
 
 def _parse(content: str) -> list[Segment]:
@@ -288,16 +306,15 @@ def _parse(content: str) -> list[Segment]:
             continue
         # `order` đánh lại theo vị trí SAU khi lọc, không tin số LLM trả: nó đánh trùng
         # hoặc nhảy số được, mà UI dùng order làm khoá React lẫn thứ tự hiển thị.
-        out.append(Segment(order=len(out) + 1,
-                           label=str(item.get("label") or f"Event {len(out) + 1}"),
-                           english_clip_query=text))
+        # Khoá thừa (`label` chẳng hạn, nếu LLM lỡ trả dù prompt đã cấm) bị bỏ im lặng.
+        out.append(Segment(order=len(out) + 1, english_clip_query=text))
     if not out:
         raise ValueError("không còn đoạn nào sau khi lọc")
     return out
 
 
 async def segment(query: str, settings) -> Segmentation:
-    """Không bao giờ raise. Lỗi -> Segmentation(1 đoạn "Full query", error=...)."""
+    """Không bao giờ raise. Lỗi -> Segmentation(1 đoạn = câu gốc, error=...)."""
     if not settings.llm_enabled:
         return Segmentation(segments=_fallback(query))
 
@@ -327,7 +344,7 @@ async def segment(query: str, settings) -> Segmentation:
         return Segmentation(segments=_parse(content), model=settings.llm_model,
                             latency_ms=(time.perf_counter() - t0) * 1000)
     except Exception as ex:  # noqa: BLE001 — LLM lỗi KHÔNG được làm chết prepare
-        log.warning("tách đoạn lỗi (%s: %s) -> lùi về 1 đoạn 'Full query'",
+        log.warning("tách đoạn lỗi (%s: %s) -> lùi về 1 đoạn = câu gốc",
                     type(ex).__name__, ex)
         return Segmentation(segments=_fallback(query), model=settings.llm_model,
                             latency_ms=(time.perf_counter() - t0) * 1000,
@@ -340,7 +357,7 @@ async def segment(query: str, settings) -> Segmentation:
 pytest services/be/tests/test_segment.py -q
 ```
 
-Expected: PASS, 6 passed.
+Expected: PASS, 7 passed.
 
 - [ ] **Step 7: Xác nhận harness chạy tay vẫn dùng được**
 
@@ -412,8 +429,8 @@ def dual_llm(segment_content, tag_payload=None):
 
 
 SEG_TWO = """[
-  {"order": 1, "label": "Event 1", "english_clip_query": "A fish placed on a scale."},
-  {"order": 2, "label": "Event 2", "english_clip_query": "A person holding a fish."}
+  {"order": 1, "english_clip_query": "A fish placed on a scale."},
+  {"order": 2, "english_clip_query": "A person holding a fish."}
 ]"""
 
 
@@ -423,7 +440,7 @@ def test_prepare_tra_ve_doan_va_tag(client, llm):
                     json={"query": "cá được cân, sau đó người cầm đuôi cá"})
     assert r.status_code == 200, r.text
     d = r.json()
-    assert [s["label"] for s in d["segments"]] == ["Event 1", "Event 2"]
+    assert [s["order"] for s in d["segments"]] == [1, 2]
     assert d["segments"][0]["english_clip_query"] == "A fish placed on a scale."
     # `>=` chứ không `==`: enrich.decide_tags còn BÙ THÊM tag mà guard regex nhận ra
     # (services/be/src/app/services/enrich.py::decide_tags nhánh 3), nên danh sách cuối
@@ -448,14 +465,27 @@ def test_prepare_tra_ve_ca_vocab_de_user_tick_them(client, llm):
     assert set(d["tag_names"]) == {"0", "1", "2", "3", "4"}
 
 
-def test_prepare_loi_tach_doan_lui_ve_full_query(client, llm):
+def test_prepare_loi_tach_doan_lui_ve_cau_goc(client, llm):
+    """Hỏng -> 1 đoạn = câu gốc, và BÁO ra bằng warning chứ không bằng nhãn trong dữ liệu."""
     dual_llm("xin lỗi, tôi không hiểu")
     d = client.post("/api/search/temporal/prepare",
                     json={"query": "câu gốc"}).json()
     assert len(d["segments"]) == 1
-    assert d["segments"][0]["label"] == "Full query"
     assert d["segments"][0]["english_clip_query"] == "câu gốc"
     assert "llm_failed_segment" in d["warnings"]
+
+
+def test_prepare_mot_doan_hop_le_khong_bao_loi(client, llm):
+    """N=1 do LLM trả ĐÚNG (câu không có mốc thời gian) khác N=1 do hỏng.
+
+    Cả hai rẽ vào cùng một nhánh UI (mời chạy KIS), nhưng chỉ nhánh hỏng mới hiện cảnh
+    báo. Không có `warnings` để phân biệt thì UI phải đoán bằng cách so chuỗi.
+    """
+    dual_llm('[{"order": 1, "english_clip_query": "A group of people exercising."}]')
+    d = client.post("/api/search/temporal/prepare",
+                    json={"query": "nhóm người tập thể dục"}).json()
+    assert len(d["segments"]) == 1
+    assert "llm_failed_segment" not in d["warnings"]
 
 
 def test_prepare_query_rong_bi_tu_choi(client):
@@ -469,7 +499,7 @@ def test_prepare_query_rong_bi_tu_choi(client):
 pytest services/be/tests/test_search_temporal.py -q -k prepare
 ```
 
-Expected: FAIL — 4 test đầu trả `404 Not Found` (assert `status_code == 200` đỏ), test cuối cũng đỏ vì 404 ≠ 422.
+Expected: FAIL — 5 test đầu trả `404 Not Found` (assert `status_code == 200` đỏ, hoặc `KeyError` khi đọc khoá của response 404), test cuối cũng đỏ vì 404 ≠ 422.
 
 - [ ] **Step 3: Viết implementation tối thiểu**
 
@@ -490,7 +520,6 @@ class PrepareRequest(BaseModel):
 
 class SegmentOut(BaseModel):
     order: int
-    label: str
     english_clip_query: str
 
 
@@ -534,8 +563,7 @@ async def prepare(req: PrepareRequest) -> PrepareResponse:
         warnings.append("llm_failed_tags")
 
     return PrepareResponse(
-        segments=[SegmentOut(order=s.order, label=s.label,
-                             english_clip_query=s.english_clip_query)
+        segments=[SegmentOut(order=s.order, english_clip_query=s.english_clip_query)
                   for s in segmentation.segments],
         tags=enrichment.tags,
         tag_names={tid: (info.name or info.description)
@@ -560,7 +588,7 @@ async def prepare(req: PrepareRequest) -> PrepareResponse:
 pytest services/be/tests/test_search_temporal.py -q
 ```
 
-Expected: PASS, 9 passed (4 test cũ + 5 test mới).
+Expected: PASS, 10 passed (4 test cũ + 6 test mới).
 
 - [ ] **Step 5: Commit**
 
@@ -678,7 +706,7 @@ bằng:
 pytest services/be/tests/test_search_temporal.py -q
 ```
 
-Expected: PASS, 12 passed. Bốn test gốc (`test_temporal_search_returns_chains_with_two_hits_each`, `test_temporal_use_llm_false_skips_llm`, `test_temporal_use_llm_true_unions_both_events_tags`, `test_temporal_empty_event_rejected`) phải xanh **mà không sửa nội dung**.
+Expected: PASS, 13 passed. Bốn test gốc (`test_temporal_search_returns_chains_with_two_hits_each`, `test_temporal_use_llm_false_skips_llm`, `test_temporal_use_llm_true_unions_both_events_tags`, `test_temporal_empty_event_rejected`) phải xanh **mà không sửa nội dung**.
 
 - [ ] **Step 5: Trỏ lại 5 tham chiếu spec chết**
 
@@ -745,8 +773,9 @@ Thêm vào cuối file:
 ```ts
 // Khớp services/be/src/app/api/search_temporal.py — PrepareResponse.
 export type TemporalSegment = {
+	// Thứ tự thời gian LLM suy ra, đánh lại từ 1 ở BE. Không có `label`: prompt cấm mang
+	// nhãn nguồn (E1, "Sự kiện 1") sang output.
 	order: number;
-	label: string;
 	english_clip_query: string;
 };
 
@@ -947,8 +976,10 @@ export function TemporalPrepare({ onSearch, onRunAsKis }: Props) {
 								>
 									{at === -1 ? "·" : at + 1}
 								</button>
-								<span className="badge text-bg-light align-self-center" style={{ minWidth: "5rem" }}>
-									{s.label}
+								{/* `order` = thứ tự thời gian LLM suy ra, chỉ để đọc. Badge bên trái mới
+								    là thứ tự sự kiện user chọn — hai con số khác nhau, đừng gộp hiển thị. */}
+								<span className="text-muted small align-self-center" style={{ minWidth: "1.5rem" }}>
+									{s.order}.
 								</span>
 								<textarea
 									className="form-control form-control-sm"
