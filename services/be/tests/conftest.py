@@ -162,17 +162,27 @@ def client(tmp_path, llm, monkeypatch):
     holder = IndexHolder()
     holder.swap(snap)
 
-    sock_path = os.path.join(tempfile.mkdtemp(), "sc.sock")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     cfg = Config()
     pb_grpc.add_SearchCoreServiceServicer_to_server(
         SearchCoreServiceServicer(holder, FakeEncoder(), cfg), server)
     apb_grpc.add_AdminServiceServicer_to_server(
         AdminServiceServicer(holder, FakeEncoder(), cfg), server)
-    server.add_insecure_port(f"unix://{sock_path}")
+
+    # grpc trên Windows KHÔNG bind được địa chỉ `unix://` — add_insecure_port trả 0 và
+    # fixture chết, kéo theo mọi test dùng `client`. Đổi sang TCP loopback chỉ ở Windows:
+    # core vẫn là core THẬT qua gRPC (đúng ý đồ ban đầu, xem docstring đầu file), chỉ đổi
+    # transport. Linux/CI không đổi gì, vẫn đi Unix socket như production.
+    if sys.platform == "win32":
+        port = server.add_insecure_port("127.0.0.1:0")   # 0 = OS tự chọn cổng rảnh
+        target = f"127.0.0.1:{port}"
+    else:
+        sock_path = os.path.join(tempfile.mkdtemp(), "sc.sock")
+        server.add_insecure_port(f"unix://{sock_path}")
+        target = f"unix://{sock_path}"
     server.start()
 
-    monkeypatch.setenv("SEARCHCORE_TARGET", f"unix://{sock_path}")
+    monkeypatch.setenv("SEARCHCORE_TARGET", target)
     monkeypatch.setenv("DEFAULT_TOP_K", "10")
     monkeypatch.setenv("DIVERSITY_MAX_PER_VIDEO", "0")
 
