@@ -1,6 +1,6 @@
 """POST /api/search/temporal — TRAKE: 2 sự kiện có thứ tự.
 
-Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. Điểm quan trọng:
+Xem docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md. Điểm quan trọng:
 SearchTemporalRequest ở core chỉ có MỘT Filter cho cả request (không phải 1/event) --
 nên khi use_llm=True, hai event được enrich RIÊNG (mỗi event mô tả một thứ khác nhau)
 nhưng tag của chúng được HỢP lại thành một tập duy nhất trước khi gửi sang core.
@@ -34,6 +34,13 @@ class TemporalSearchRequest(BaseModel):
     # riêng có thể ra tag khác nhau, và lọc tag là CỨNG -- một tag sai ở một event có
     # thể giết chuỗi. Xem docs/runbook.md về rủi ro TRAKE + tag partitioning.
     use_llm: bool = False
+    # Chỉ định tag thẳng, bỏ qua LLM — client gửi lại tag lấy từ /search/temporal/prepare
+    # sau khi user tick/bỏ tick. Mirror `SearchRequest.tags` (schemas/search.py).
+    #
+    # [] và None KHÁC nhau và không được gộp: [] = "user đã bỏ tick hết, search toàn kho",
+    # None = "không qua prepare, quyết định theo use_llm". Gộp lại là âm thầm bật lại lọc
+    # tag mà user vừa cố ý tắt — mà lọc tag là CỨNG, không cứu được ở tầng nào khác.
+    tags: list[int] | None = None
     exact: bool = False
     top_k: int | None = None
 
@@ -127,8 +134,11 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
 
     vocab, snap_ver = await tagvocab.get(st)
 
+    # Tính một lần rồi dùng lại, giống api/search.py:87.
+    used_llm = req.tags is None and req.use_llm
+
     async def _enrich(text: str):
-        if not req.use_llm:
+        if not used_llm:
             return enrich_svc.Enrichment(enriched_text=text)
         return await enrich_svc.enrich(text, vocab, st)
 
@@ -149,7 +159,7 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
         raise HTTPException(502, f"searchcore: {code.name}: {ex.details()}") from ex
     parallel_ms = (time.perf_counter() - t0) * 1000
 
-    tags = sorted(set(enr1.tags) | set(enr2.tags))
+    tags = req.tags if req.tags is not None else sorted(set(enr1.tags) | set(enr2.tags))
 
     try:
         resp = await searchcore.search_temporal(

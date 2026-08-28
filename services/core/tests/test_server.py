@@ -5,6 +5,7 @@ ví dụ dùng nhầm message ở sai file proto (`SearchHit` nằm trong common
 phải search.proto), hoặc map sai mã lỗi gRPC.
 """
 
+import sys
 import tempfile
 from concurrent import futures
 
@@ -38,19 +39,33 @@ class FakeEncoder:
         return self.encode([text])[0]
 
 
+def _bind(server) -> str:
+    """Bind `server` rồi trả về địa chỉ để client nối vào.
+
+    grpc trên Windows KHÔNG bind được địa chỉ `unix://`: add_insecure_port trả về 0 và
+    mọi fixture dựng server đều chết. Đổi sang TCP loopback CHỈ ở Windows — vẫn đi qua
+    socket thật đúng như ý đồ ở docstring đầu file, chỉ khác transport. Linux/CI không
+    đổi gì, vẫn Unix socket như production.
+    """
+    if sys.platform == "win32":
+        return f"127.0.0.1:{server.add_insecure_port('127.0.0.1:0')}"
+    sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
+    server.add_insecure_port(sock)
+    return sock
+
+
 @pytest.fixture
 def stubs(snap):
     holder = IndexHolder()
     holder.swap(snap)
     cfg = Config()
-    sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     pb_grpc.add_SearchCoreServiceServicer_to_server(
         SearchCoreServiceServicer(holder, FakeEncoder(), cfg), server)
     apb_grpc.add_AdminServiceServicer_to_server(
         AdminServiceServicer(holder, FakeEncoder(), cfg), server)
-    server.add_insecure_port(sock)
+    sock = _bind(server)
     server.start()
 
     channel = grpc.insecure_channel(sock)
@@ -69,12 +84,11 @@ def stubs_small_gap(snap):
     holder.swap(snap)
     cfg = Config(trake_min_gap_sec=0.1, trake_max_gap_sec=5.0,
                 trake_candidates_per_event=1)
-    sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     pb_grpc.add_SearchCoreServiceServicer_to_server(
         SearchCoreServiceServicer(holder, FakeEncoder(), cfg), server)
-    server.add_insecure_port(sock)
+    sock = _bind(server)
     server.start()
 
     channel = grpc.insecure_channel(sock)
@@ -111,13 +125,12 @@ def test_health_unavailable_before_snapshot_loaded():
     """Core mất vài phút tải + validate snapshot; trong khoảng đó phải trả UNAVAILABLE
     chứ không phải kết quả rỗng — FE cần phân biệt được hai thứ."""
     holder = IndexHolder()
-    sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     pb_grpc.add_SearchCoreServiceServicer_to_server(
         SearchCoreServiceServicer(holder, None, Config()), server)
     apb_grpc.add_AdminServiceServicer_to_server(
         AdminServiceServicer(holder, None, Config()), server)
-    server.add_insecure_port(sock)
+    sock = _bind(server)
     server.start()
     try:
         ch = grpc.insecure_channel(sock)
@@ -259,11 +272,10 @@ def test_search_temporal_rejects_wrong_event_count(stubs):
 
 def test_search_temporal_unavailable_before_snapshot_loaded():
     holder = IndexHolder()
-    sock = f"unix://{tempfile.mkdtemp()}/sc.sock"
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     pb_grpc.add_SearchCoreServiceServicer_to_server(
         SearchCoreServiceServicer(holder, None, Config()), server)
-    server.add_insecure_port(sock)
+    sock = _bind(server)
     server.start()
     try:
         ch = grpc.insecure_channel(sock)

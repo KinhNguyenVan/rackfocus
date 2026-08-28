@@ -1,7 +1,7 @@
 """Test ghép chuỗi TRAKE: đúng thứ tự, tôn trọng gap, top-K cặp mỗi video, gộp +
 cắt top_k trên toàn bộ pool.
 
-Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. Dùng lại fixture `snap`
+Xem docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md. Dùng lại fixture `snap`
 của conftest.py (200 row, 4 video luân phiên theo i%4, keyframe_time = i*0.2): row r nằm
 ở video L26_V{r%4:03d}, thời điểm r*0.2s.
 """

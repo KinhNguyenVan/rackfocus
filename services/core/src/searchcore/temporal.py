@@ -1,6 +1,6 @@
 """TRAKE: search 2 sự kiện rồi ghép cặp theo thứ tự thời gian + giới hạn khoảng cách.
 
-Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. Tái dùng
+Xem docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md. Tái dùng
 search_with_fallback cho từng event (KHÔNG brute-force toàn corpus — đã đo là quá chậm
 nếu làm hai lần) rồi ghép theo video_name — mỗi video giữ tối đa max_pairs_per_video cặp
 tốt nhất (không chỉ MỘT), tất cả cặp của mọi video được gộp vào một pool rồi cắt còn
