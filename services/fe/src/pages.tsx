@@ -305,7 +305,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       if (useSegment) return;
       if (event1.trim() && event2.trim()) {
         setSelected([]);
-        setSubmittedTags(null);      // nhập tay -> để BE quyết theo use_llm
+        setSubmittedTags(null); // nhập tay -> để BE quyết theo use_llm
         setSubmittedExactMode(exactMode);
         setSubmittedEvent1(event1.trim());
         setSubmittedEvent2(event2.trim());
@@ -352,16 +352,16 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       );
     }
     if (task === "qa") {
-      if (selected.length !== 1 || !qaAnswer)
-        return alert("QA: Cần chọn đúng 1 frame và nhập answer.");
+      if (!selected.length || !qaAnswer)
+        return alert("QA: Cần chọn ít nhất 1 frame và nhập answer.");
       setOutput(
         JSON.stringify(
           {
             answerSets: [
               {
-                answers: [
-                  { text: `QA-${qaAnswer}-${first.video}-${toMs(first)}` },
-                ],
+                answers: selected.map((item) => ({
+                  text: `QA-${qaAnswer}-${item.video}-${toMs(item)}`,
+                })),
               },
             ],
           },
@@ -402,13 +402,13 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     if (task === "kis") {
       rows = selected.map((item) => `${item.video},${item.frame}`);
     } else if (task === "qa") {
-      if (selected.length !== 1 || !qaAnswer)
-        return alert("QA: Cần chọn đúng 1 frame và nhập answer.");
+      if (!selected.length || !qaAnswer)
+        return alert("QA: Cần chọn ít nhất 1 frame và nhập answer.");
       const escapedAnswer = qaAnswer.replace(/"/g, '""');
       const csvAnswer = /[",\r\n]/.test(qaAnswer)
         ? `"${escapedAnswer}"`
         : qaAnswer;
-      rows = [`${first.video},${first.frame},${csvAnswer}`];
+      rows = selected.map((item) => `${item.video},${item.frame},${csvAnswer}`);
     } else {
       if (!selected.every((item) => item.video === first.video))
         return alert("Trake: Tất cả frame phải cùng 1 video.");
