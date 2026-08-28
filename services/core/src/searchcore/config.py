@@ -91,8 +91,8 @@ class Config:
     # zero-penalty reference point.
     trake_min_gap_sec: float = _float("TRAKE_MIN_GAP_SEC", 5.0)
     # Hard ceiling on (t2 - t1): pairs further apart are excluded entirely.
-    trake_max_gap_sec: float = _float("TRAKE_MAX_GAP_SEC", 120.0)
-    trake_lambda: float = _float("TRAKE_LAMBDA", 0.00693)
+    trake_max_gap_sec: float = _float("TRAKE_MAX_GAP_SEC", 60.0)
+    trake_lambda: float = _float("TRAKE_LAMBDA", 0.0173)
     trake_sim_weight: float = _float("TRAKE_SIM_WEIGHT", 0.8)
     trake_time_weight: float = _float("TRAKE_TIME_WEIGHT", 0.2)
     trake_top_k_chains: int = _int("TRAKE_TOP_K_CHAINS", 20)
