@@ -374,6 +374,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     if (task === "trake") {
       if (!selected.every((item) => item.video === first.video))
         return alert("Trake: Tất cả frame phải cùng 1 video.");
+      const orderedFrames = [...selected].sort(
+        (left, right) => left.keyframe_time - right.keyframe_time,
+      );
       setOutput(
         JSON.stringify(
           {
@@ -381,7 +384,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
               {
                 answers: [
                   {
-                    text: `TR-${first.video}-${selected.map((item) => toMs(item)).join(",")}`,
+                    text: `TR-${first.video}-${orderedFrames
+                      .map((item) => item.frame)
+                      .join(",")}`,
                   },
                 ],
               },
@@ -413,7 +418,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     } else {
       if (!selected.every((item) => item.video === first.video))
         return alert("Trake: Tất cả frame phải cùng 1 video.");
-      rows = [`${first.video},${selected.map((item) => item.frame).join(",")}`];
+      rows = [
+        `${first.video},${[...selected]
+          .sort((left, right) => left.keyframe_time - right.keyframe_time)
+          .map((item) => item.frame)
+          .join(",")}`,
+      ];
     }
 
     const blob = new Blob([`${rows.join("\n")}\n`], {
