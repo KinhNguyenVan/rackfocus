@@ -86,6 +86,10 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   // Tắt = bỏ qua bước LLM chọn tag ở BE (services/be/src/app/api/search.py::_enrich
   // đã có sẵn use_llm), core search toàn bộ corpus không lọc theo tag.
   const [useLlm, setUseLlm] = useState(true);
+  // Công tắc RIÊNG, chỉ có nghĩa ở temporal mode: bật = LLM tách câu thành N sự kiện
+  // (trang TemporalPrepare), tắt = tự gõ 2 ô. Độc lập với useLlm ở trên vì tách event và
+  // lọc tag là hai lời gọi LLM khác nhau, user có thể muốn cái này mà không muốn cái kia.
+  const [useSegment, setUseSegment] = useState(true);
   // "rerank" (mặc định) = core tự chọn: HNSW+SQ8 coarse -> rerank exact trên top
   // rerank_candidates (hoặc EXACT_SUBSET nếu tag đủ hẹp). "exact" = ép brute-force
   // toàn candidate/corpus, bỏ qua HNSW hoàn toàn -- chậm hơn, không xấp xỉ.
@@ -227,6 +231,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       setFlag(saved.flagValue ?? "");
       setService(saved.serviceValue ?? "image");
       setUseLlm(saved.useLlm ?? true);
+      setUseSegment(saved.useSegment ?? true);
       setExactMode(saved.exactMode ?? false);
       setSearchMode(saved.searchMode ?? "kis");
     } catch {}
@@ -240,11 +245,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
         flagValue: flag,
         serviceValue: service,
         useLlm,
+        useSegment,
         exactMode,
         searchMode,
       }),
     );
-  }, [query, flag, service, useLlm, exactMode, searchMode]);
+  }, [query, flag, service, useLlm, useSegment, exactMode, searchMode]);
 
   useEffect(() => {
     const handleClick = () =>
@@ -294,9 +300,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   function search(event: FormEvent) {
     event.preventDefault();
     if (searchMode === "temporal") {
-      // Bật LLM: TemporalPrepare tự có nút riêng (Phân tích / Tìm chuỗi), form submit
-      // không có việc gì để làm.
-      if (useLlm) return;
+      // Bật tách event: TemporalPrepare tự có nút riêng (Phân tích / kính lúp), form
+      // submit không có việc gì để làm.
+      if (useSegment) return;
       if (event1.trim() && event2.trim()) {
         setSelected([]);
         setSubmittedTags(null);      // nhập tay -> để BE quyết theo use_llm
@@ -540,8 +546,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                       </label>
                     </div>
                     <form onSubmit={search}>
-                      {searchMode === "temporal" && useLlm ? (
+                      {searchMode === "temporal" && useSegment ? (
                         <TemporalPrepare
+                          useLlm={useLlm}
                           onSearch={(e1, e2, tags) => {
                             setSelected([]);
                             setSubmittedTags(tags);
@@ -593,12 +600,14 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         </div>
                       )}
                       <div className="d-flex align-items-center gap-2 mt-2">
-                        <button
-                          className="btn btn-sm btn-outline-secondary px-3"
-                          type="submit"
-                        >
-                          <i className="bi bi-search"></i>
-                        </button>
+                        {!(searchMode === "temporal" && useSegment) && (
+                          <button
+                            className="btn btn-sm btn-outline-secondary px-3"
+                            type="submit"
+                          >
+                            <i className="bi bi-search"></i>
+                          </button>
+                        )}
                         <button
                           className="btn btn-sm btn-outline-danger"
                           type="button"
@@ -609,6 +618,32 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         </button>
                       </div>
                     </form>
+                    {searchMode === "temporal" && (
+                      <div className="form-check form-switch mb-2">
+                        <input
+                          className="form-check-input"
+                          type="checkbox"
+                          role="switch"
+                          id="useSegmentSwitch"
+                          checked={useSegment}
+                          onChange={(e) => {
+                            setUseSegment(e.target.checked);
+                            // Đổi luồng thì tag của luồng cũ hết hiệu lực: bật lên là
+                            // chưa prepare lần nào, tắt đi là quay về nhập tay. Cả hai
+                            // đều phải để BE tự quyết theo use_llm.
+                            setSubmittedTags(null);
+                          }}
+                        />
+                        <label
+                          className="form-check-label small"
+                          htmlFor="useSegmentSwitch"
+                        >
+                          {useSegment
+                            ? "Dùng LLM tách sự kiện — bật"
+                            : "Tự gõ 2 sự kiện — tắt tách"}
+                        </label>
+                      </div>
+                    )}
                     <div className="form-check form-switch mb-3">
                       <input
                         className="form-check-input"
@@ -618,9 +653,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         checked={useLlm}
                         onChange={(e) => {
                           setUseLlm(e.target.checked);
-                          // Tắt LLM = "search toàn bộ, không lọc" đúng như nhãn bên
-                          // dưới. Giữ lại tag của lần prepare trước thì vẫn lọc ngầm --
-                          // đúng cái user vừa cố ý tắt đi.
+                          // Tắt = "search toàn bộ, không lọc" đúng như nhãn bên dưới.
+                          // Giữ lại tag của lần prepare trước thì vẫn lọc ngầm -- đúng
+                          // cái user vừa cố ý tắt đi.
                           if (!e.target.checked) setSubmittedTags(null);
                         }}
                       />
@@ -628,9 +663,11 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         className="form-check-label small"
                         htmlFor="useLlmSwitch"
                       >
+                        {/* KHÔNG nói "tắt LLM" nữa: ở temporal, tách sự kiện cũng là LLM
+                            và có công tắc riêng bên trên. Đây chỉ là lọc tag. */}
                         {useLlm
-                          ? "Lọc theo LLM (tag) — bật"
-                          : "Search toàn bộ, không lọc — tắt LLM"}
+                          ? "Lọc theo lĩnh vực (LLM) — bật"
+                          : "Search toàn bộ, không lọc"}
                       </label>
                     </div>
                     <div className="mb-3">

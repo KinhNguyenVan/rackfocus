@@ -29,25 +29,31 @@ def test_temporal_use_llm_false_skips_llm(client, llm):
     assert "warnings" in d
 
 
-def test_temporal_use_llm_true_unions_both_events_tags(client, llm):
+def test_temporal_enrich_mot_lan_tren_hai_event_ghep(client, llm):
+    """MỘT lời gọi enrich, và nó phải thấy CẢ HAI event.
+
+    Trước đây enrich riêng từng event rồi hợp tag -- tốn 2 lời gọi LLM mà mỗi lời gọi chỉ
+    thấy nửa câu chuyện, trong khi core dù sao cũng chỉ nhận một Filter.
+    """
     calls = []
 
     async def reply(**kwargs):
-        text = kwargs["messages"][1]["content"]
-        calls.append(text)
-        payload = {"tags": [0]} if len(calls) == 1 else {"tags": [1]}
+        calls.append(kwargs["messages"][1]["content"])
         import json
         import types
-        msg = types.SimpleNamespace(content=json.dumps({**payload, "enriched": ""}))
+        msg = types.SimpleNamespace(
+            content=json.dumps({"tags": [0], "enriched": ""}))
         return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
 
     import sys
     import types as _types
     sys.modules["litellm"] = _types.SimpleNamespace(acompletion=reply)
 
-    d = search_temporal(client, use_llm=True)
-    assert len(calls) == 2
-    assert d  # phản hồi vẫn hợp lệ dù mỗi event ra tag khác nhau
+    search_temporal(client, use_llm=True,
+                    event1="người đàn ông cầm micro", event2="khán giả vỗ tay")
+    assert len(calls) == 1
+    assert "người đàn ông cầm micro" in calls[0]
+    assert "khán giả vỗ tay" in calls[0]
 
 
 def test_temporal_empty_event_rejected(client):
@@ -73,7 +79,7 @@ def test_tags_tuong_minh_thi_bo_qua_llm(client, llm):
 def test_tags_rong_nghia_la_khong_loc(client, llm):
     """[] = "user bỏ tick hết, search toàn kho" — KHÁC None, và cũng không gọi LLM.
 
-    Nếu [] bị gộp nhầm với None thì use_llm=True sẽ kéo LLM chạy -> llm.calls == 2.
+    Nếu [] bị gộp nhầm với None thì use_llm=True sẽ kéo LLM chạy -> llm.calls == 1.
     """
     search_temporal(client, use_llm=True, tags=[])
     assert llm.calls == 0
@@ -83,7 +89,7 @@ def test_tags_vang_mat_giu_nguyen_hanh_vi_cu(client, llm):
     """None = "không qua prepare" -> vẫn quyết định theo use_llm như trước."""
     llm.reply = {"tags": [2], "enriched": "", "confidence": 1.0}
     search_temporal(client, use_llm=True)
-    assert llm.calls == 2          # enrich riêng cho từng event, như cũ
+    assert llm.calls == 1          # một enrich cho cả hai event đã ghép
 
 
 # ── /api/search/temporal/prepare ────────────────────────────────────────────
@@ -143,6 +149,33 @@ def test_prepare_tra_ve_doan_va_tag(client, llm):
 
 
 def test_prepare_goi_dung_hai_llm(client, llm):
+    calls = dual_llm(SEG_TWO)
+    client.post("/api/search/temporal/prepare", json={"query": "x sau đó y"})
+    assert calls == {"segment": 1, "tags": 1}
+
+
+def test_prepare_tat_loc_tag_thi_chi_goi_segment(client, llm):
+    """Tách event và lọc tag là HAI công tắc độc lập trên UI.
+
+    use_llm=False ở đây = "tách event nhưng không lọc" -> phải BỎ HẲN lời gọi enrich, chứ
+    không phải gọi rồi vứt kết quả (vẫn tốn tiền + latency của một lời gọi LLM).
+    """
+    calls = dual_llm(SEG_TWO, {"tags": [0, 1]})
+    r = client.post("/api/search/temporal/prepare",
+                    json={"query": "x sau đó y", "use_llm": False})
+    assert r.status_code == 200, r.text
+    assert calls == {"segment": 1, "tags": 0}
+
+    d = r.json()
+    assert [s["order"] for s in d["segments"]] == [1, 2]   # tách đoạn vẫn chạy
+    assert d["tags"] == []                                 # không lọc
+    assert d["tag_names"] == {}                            # không có gì để tick
+    assert d["tag_source"] == "disabled"
+    assert "llm_failed_tags" not in d["warnings"]          # bỏ qua khác với hỏng
+
+
+def test_prepare_mac_dinh_van_loc_tag(client, llm):
+    """Thiếu `use_llm` -> mặc định True, giữ nguyên hành vi client cũ."""
     calls = dual_llm(SEG_TWO)
     client.post("/api/search/temporal/prepare", json={"query": "x sau đó y"})
     assert calls == {"segment": 1, "tags": 1}

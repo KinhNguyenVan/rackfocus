@@ -32,8 +32,9 @@ sql/            Postgres schema for the offline ingest pipeline only — see not
 scripts/        Ops scripts (proto codegen, snapshot pull/swap, bench, hardware check)
 ops/            Deploy/ops docs *and* code: RunPod Dockerfile/start.sh, encbench.py, gpu_parity.py,
                 RUNBOOK.md, SERVERLESS.md, its own Caddyfile, Grafana dashboards, backup/monitoring
-prompt.yaml     The LLM tag-enrichment system prompt (the "LLM(text + tag_vocab)" step below)
-run_prompt.py   Manual harness: runs prompt.yaml over a hardcoded query list via litellm
+run_prompt.py   Manual harness: runs the temporal segmentation prompt over a hardcoded
+                Vietnamese query list via litellm (see Temporal search below) — the
+                tag-enrichment prompt is built inline in Python, not from a prompt file
 docs/decisions/ ADRs — read before proposing an architecture change (currently stubs, see below)
 docs/search-design.md   The actual, reviewed design for core+BE search (read this first)
 docs/runbook.md         What's done vs. what's missing to run the system for real
@@ -205,6 +206,34 @@ core — only the text tower is bundled), QA (`has_ocr`/`objects` stages not imp
 embedded), sparse/BM25. Check `docs/search-design.md` §9 before assuming a proto field (e.g.
 `Filter.require_ocr`, `SearchSimilar`) actually does anything server-side — many exist in
 `proto/` for the full product vision but aren't wired up yet.
+
+### Temporal search: prepare-then-search two-step flow
+
+TRAKE has a second endpoint, `POST /api/search/temporal/prepare`
+(`services/be/src/app/api/search_temporal.py`), that runs *before* `/api/search/temporal`
+and is explicitly exempt from the 100–200ms hot-path budget — the user still has to review
+segments and pick two events after it returns. It fans out two independent LLM calls in
+parallel (`asyncio.gather`, latency = max, not sum):
+
+- `services/segment.py` splits one Vietnamese query into N English CLIP-ready segments
+  (prompt: `services/be/src/app/services/segment_prompt.txt`, moved here from the old
+  root-level `prompt.yaml`, which no longer exists).
+- `services/enrich.py` tag-selects the same query, same as normal search.
+
+Both services share a contract: **never raise**. Any LLM failure/timeout/garbage JSON
+degrades to a single fallback segment (the original query verbatim) or empty tags, plus an
+`error` field that surfaces to the client as a `warnings` entry (`llm_failed_segment` /
+`llm_failed_tags`) — never an HTTP error.
+
+FE's `TemporalPrepare.tsx` lets the user edit segment text and tick/untick tags before
+calling `search_temporal` with `tags` set explicitly, which **bypasses** LLM tag selection
+on that second call (`used_llm = req.tags is None and req.use_llm` in
+`search_temporal.py`). `tags: []` (user unticked everything → search the whole corpus) and
+`tags: None` (skipped prepare → decide by `use_llm`) are different states and must not be
+merged — see the comment on `TemporalSearchRequest.tags`. When `use_llm=False` (TRAKE's
+default), FE swaps in `TemporalQueryBuilder.tsx` (two plain text boxes) instead of
+`TemporalPrepare`. Design doc:
+`docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md`.
 
 ### Ingest pipeline (offline, GPU)
 

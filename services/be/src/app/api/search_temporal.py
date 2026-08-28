@@ -2,8 +2,13 @@
 
 Xem docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md. Điểm quan trọng:
 SearchTemporalRequest ở core chỉ có MỘT Filter cho cả request (không phải 1/event) --
-nên khi use_llm=True, hai event được enrich RIÊNG (mỗi event mô tả một thứ khác nhau)
-nhưng tag của chúng được HỢP lại thành một tập duy nhất trước khi gửi sang core.
+nên chỉ có MỘT tập tag cho cả chuỗi.
+
+Vì thế khi use_llm=True ta gọi enrich đúng MỘT lần trên hai event đã ghép, thay vì enrich
+riêng từng event rồi hợp tag. Rẻ hơn một lời gọi LLM, mà còn đúng hơn: enrich riêng lẻ chỉ
+thấy nửa câu chuyện nên dễ chọn lĩnh vực lệch, trong khi core dù sao cũng chỉ nhận một
+Filter. An toàn vì ở temporal `enriched_text` bị VỨT -- vector query encode thẳng từ
+`req.event1`/`req.event2`, enrich ở đây chỉ để lấy `.tags`.
 """
 from __future__ import annotations
 
@@ -62,6 +67,10 @@ class TemporalSearchResponse(BaseModel):
 
 class PrepareRequest(BaseModel):
     query: str = Field(min_length=1)
+    # Tách event (segment) và lọc tag (enrich) là HAI công tắc độc lập trên UI. Cờ này chỉ
+    # điều khiển enrich; đã vào tới đây nghĩa là user đã bật tách event. False -> bỏ hẳn
+    # lời gọi enrich (không phải gọi rồi vứt kết quả), prepare còn đúng một lời gọi LLM.
+    use_llm: bool = True
 
 
 class SegmentOut(BaseModel):
@@ -84,11 +93,13 @@ class PrepareResponse(BaseModel):
 
 @router.post("/search/temporal/prepare", response_model=PrepareResponse)
 async def prepare(req: PrepareRequest) -> PrepareResponse:
-    """Bước 1 của temporal: LLM tách đoạn + LLM chọn tag, CHẠY SONG SONG.
+    """Bước 1 của temporal: LLM tách đoạn + (tuỳ chọn) LLM chọn tag, CHẠY SONG SONG.
 
     Không nằm trên hot path — sau bước này người dùng còn phải sửa câu và bấm chọn 2 sự
     kiện, nên ngân sách 100-200ms không áp ở đây. Bước tách đoạn nhiều khả năng là bên
     chậm hơn: `segment_prompt.txt` dài hơn hẳn prompt trong `enrich.py`.
+
+    `use_llm=False` -> chỉ chạy segment. Xem PrepareRequest.use_llm.
 
     Không có try/except: cả `segment()` lẫn `enrich()` đều cam kết không raise.
     """
@@ -97,9 +108,14 @@ async def prepare(req: PrepareRequest) -> PrepareResponse:
 
     vocab, snap_ver = await tagvocab.get(st)
 
+    async def _maybe_enrich() -> enrich_svc.Enrichment:
+        if not req.use_llm:
+            return enrich_svc.Enrichment(enriched_text=req.query, tag_source="disabled")
+        return await enrich_svc.enrich(req.query, vocab, st)
+
     segmentation, enrichment = await asyncio.gather(
         segment_svc.segment(req.query, st),
-        enrich_svc.enrich(req.query, vocab, st),
+        _maybe_enrich(),
     )
 
     warnings: list[str] = []
@@ -112,8 +128,10 @@ async def prepare(req: PrepareRequest) -> PrepareResponse:
         segments=[SegmentOut(order=s.order, english_clip_query=s.english_clip_query)
                   for s in segmentation.segments],
         tags=enrichment.tags,
-        tag_names={tid: (info.name or info.description)
-                   for tid, info in vocab.items()},
+        # Tắt lọc tag -> trả vocab rỗng luôn. Vocab tồn tại để UI hiện tag cho user tick;
+        # không lọc thì không có gì để tick, gửi cả bảng xuống chỉ gây hiểu nhầm là có lọc.
+        tag_names={} if not req.use_llm else {
+            tid: (info.name or info.description) for tid, info in vocab.items()},
         confidence=enrichment.confidence,
         tag_source=enrichment.tag_source,
         warnings=warnings,
@@ -137,18 +155,20 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
     # Tính một lần rồi dùng lại, giống api/search.py:87.
     used_llm = req.tags is None and req.use_llm
 
-    async def _enrich(text: str):
+    async def _enrich() -> enrich_svc.Enrichment:
         if not used_llm:
-            return enrich_svc.Enrichment(enriched_text=text)
-        return await enrich_svc.enrich(text, vocab, st)
+            return enrich_svc.Enrichment()
+        # Ghép hai event thành một câu rồi enrich MỘT lần. Xem docstring đầu file: core
+        # chỉ nhận một Filter nên chỉ cần một tập tag, và LLM thấy cả chuỗi thì chọn lĩnh
+        # vực sát hơn là đoán rời từng nửa.
+        return await enrich_svc.enrich(f"{req.event1}. {req.event2}", vocab, st)
 
     t0 = time.perf_counter()
     try:
-        vec1, vec2, enr1, enr2 = await asyncio.gather(
+        vec1, vec2, enr = await asyncio.gather(
             searchcore.encode(req.event1, request_id=rid, timeout=st.encode_timeout_s),
             searchcore.encode(req.event2, request_id=rid, timeout=st.encode_timeout_s),
-            _enrich(req.event1),
-            _enrich(req.event2),
+            _enrich(),
         )
     except grpc.aio.AioRpcError as ex:
         code = ex.code()
@@ -159,7 +179,7 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
         raise HTTPException(502, f"searchcore: {code.name}: {ex.details()}") from ex
     parallel_ms = (time.perf_counter() - t0) * 1000
 
-    tags = req.tags if req.tags is not None else sorted(set(enr1.tags) | set(enr2.tags))
+    tags = req.tags if req.tags is not None else sorted(enr.tags)
 
     try:
         resp = await searchcore.search_temporal(
@@ -191,10 +211,8 @@ async def search_temporal(req: TemporalSearchRequest) -> TemporalSearchResponse:
     ]
 
     warnings = list(resp.meta.warnings)
-    if enr1.error:
-        warnings.append("llm_failed_event1")
-    if enr2.error:
-        warnings.append("llm_failed_event2")
+    if enr.error:
+        warnings.append("llm_failed_tags")
 
     total_ms = (time.perf_counter() - t_all) * 1000
     log.info("[%s] %r + %r -> %d chain | tags=%s | encode+enrich %.0fms, core %.0fms, "

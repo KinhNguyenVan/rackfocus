@@ -67,14 +67,17 @@ export async function searchTemporal(
 	return response.json() as Promise<TemporalSearchResponse>;
 }
 
+// `useLlm` chỉ bật/tắt bước chọn tag; tách đoạn luôn chạy (đã gọi prepare nghĩa là user
+// đã bật tách event). false -> BE bỏ hẳn lời gọi enrich, trả tags rỗng.
 export async function prepareTemporal(
 	query: string,
+	useLlm = true,
 	signal?: AbortSignal,
 ): Promise<TemporalPrepareResponse> {
 	const response = await fetch("/api/search/temporal/prepare", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ query }),
+		body: JSON.stringify({ query, use_llm: useLlm }),
 		signal,
 	});
 
