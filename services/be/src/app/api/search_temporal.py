@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from ..clients import searchcore
 from ..config import get_settings
 from ..services import enrich as enrich_svc
+from ..services import segment as segment_svc
 from ..services import tagvocab
 from .search import Hit
 
@@ -50,6 +51,72 @@ class TemporalSearchResponse(BaseModel):
     tags_used: list[int]
     snapshot_ver: str
     timings_ms: dict[str, float]
+
+
+class PrepareRequest(BaseModel):
+    query: str = Field(min_length=1)
+
+
+class SegmentOut(BaseModel):
+    order: int
+    english_clip_query: str
+
+
+class PrepareResponse(BaseModel):
+    segments: list[SegmentOut]
+    tags: list[int]
+    # CẢ vocab, không chỉ tag đã chọn: UI phải hiện tag chưa chọn để user tick THÊM vào,
+    # không chỉ bỏ bớt. Khoá JSON luôn là chuỗi -> tới FE thành {"3": "..."}.
+    tag_names: dict[int, str]
+    confidence: float
+    tag_source: str
+    warnings: list[str]
+    snapshot_ver: str
+    timings_ms: dict[str, float]
+
+
+@router.post("/search/temporal/prepare", response_model=PrepareResponse)
+async def prepare(req: PrepareRequest) -> PrepareResponse:
+    """Bước 1 của temporal: LLM tách đoạn + LLM chọn tag, CHẠY SONG SONG.
+
+    Không nằm trên hot path — sau bước này người dùng còn phải sửa câu và bấm chọn 2 sự
+    kiện, nên ngân sách 100-200ms không áp ở đây. Bước tách đoạn nhiều khả năng là bên
+    chậm hơn: `segment_prompt.txt` dài hơn hẳn prompt trong `enrich.py`.
+
+    Không có try/except: cả `segment()` lẫn `enrich()` đều cam kết không raise.
+    """
+    st = get_settings()
+    t_all = time.perf_counter()
+
+    vocab, snap_ver = await tagvocab.get(st)
+
+    segmentation, enrichment = await asyncio.gather(
+        segment_svc.segment(req.query, st),
+        enrich_svc.enrich(req.query, vocab, st),
+    )
+
+    warnings: list[str] = []
+    if segmentation.error:
+        warnings.append("llm_failed_segment")
+    if enrichment.error:
+        warnings.append("llm_failed_tags")
+
+    return PrepareResponse(
+        segments=[SegmentOut(order=s.order, english_clip_query=s.english_clip_query)
+                  for s in segmentation.segments],
+        tags=enrichment.tags,
+        tag_names={tid: (info.name or info.description)
+                   for tid, info in vocab.items()},
+        confidence=enrichment.confidence,
+        tag_source=enrichment.tag_source,
+        warnings=warnings,
+        snapshot_ver=snap_ver,
+        timings_ms={
+            "segment": round(segmentation.latency_ms, 2),
+            "enrich": round(enrichment.latency_ms, 2),
+            "total": round((time.perf_counter() - t_all) * 1000, 2),
+        },
+    )
 
 
 @router.post("/search/temporal", response_model=TemporalSearchResponse)
