@@ -25,40 +25,67 @@ convention in `services/core` and `services/be`. Match that when editing those s
 ```
 proto/          gRPC contract between be and core — freeze/review before changing either side
 services/core/  Search core: gRPC + FAISS + ONNX text encoder. Cold start 2-3 min, deployed rarely
-services/be/    BE gateway: FastAPI, LLM tag enrichment, fusion, hydrate. Deployed continuously
+services/be/    BE gateway: FastAPI, LLM tag enrichment, fusion. Deployed continuously
 services/ingest/Offline pipeline (ASR, shot/scene detect, embedding, tag build). Not in prod compose
 services/fe/    React frontend
-sql/            Postgres schema + hand-tuned queries
+sql/            Postgres schema for the offline ingest pipeline only — see note below
 scripts/        Ops scripts (proto codegen, snapshot pull/swap, bench, hardware check)
+ops/            Deploy/ops docs *and* code: RunPod Dockerfile/start.sh, encbench.py, gpu_parity.py,
+                RUNBOOK.md, SERVERLESS.md, its own Caddyfile, Grafana dashboards, backup/monitoring
+prompt.yaml     The LLM tag-enrichment system prompt (the "LLM(text + tag_vocab)" step below)
+run_prompt.py   Manual harness: runs prompt.yaml over a hardcoded query list via litellm
 docs/decisions/ ADRs — read before proposing an architecture change (currently stubs, see below)
 docs/search-design.md   The actual, reviewed design for core+BE search (read this first)
 docs/runbook.md         What's done vs. what's missing to run the system for real
 ```
+
+`src/rackfocus/` at the repo root is a leftover `uv init` scaffold (a lone `print("Hello...")`),
+not real code. Deploy has two workflows beyond `ci.yml`: `.github/workflows/deploy.yml` (VPS —
+builds and pushes three images to GHCR) and `runpod.yml` (one merged image for RunPod).
 
 **Why core is a separate container but the same repo**: `.proto` is the shared contract — one
 PR changes both sides instead of cross-repo PRs. Core loads a 6.7GB index + warmup (2-3 min);
 BE deploys several times a day. Same container would mean reloading the index on every BE fix.
 Same host: Unix socket is 0.1ms; splitting providers loses that entirely.
 
+**Postgres/Redis are not in the hot path.** `docker-compose.yml` doesn't run either: BE's
+`db/{models,queries,session}.py` and `services/{prefilter,hydrate}.py` are unimplemented
+stubs (no asyncpg/sqlalchemy call is ever made), and query caching is in-process RAM
+(`services/cache.py`), not Redis. Display payload (video_name, frame, keyframe_time, ...)
+comes straight back from core as `hit.payload` — read from the snapshot's
+`payload.parquet` — so there's no separate hydrate step to reason about. Postgres is only
+still needed offline, by `ingest/db.py`, to assign `video_id`/`scene_idx` during the embed
+pipeline. `sql/` reflects that offline schema, not a BE dependency.
+
 ## Commands
 
-All commands assume Docker Compose; there's no local (non-container) dev workflow for
-be/core/fe. `make` targets wrap `docker compose`:
+`make` targets wrap `docker compose` for the containerized workflow. A native (no-Docker)
+workflow also works and is what production/dev machines actually run day-to-day — see
+README.md's "Cách A — chạy trực tiếp bằng venv" for the full walkthrough (three terminals:
+core, be, fe; `uv sync --extra core --extra be` or `pip install -r
+services/{be,core}/requirements.txt`; core does **not** auto-load `.env`, so export it by
+hand; `SEARCHCORE_TARGET` must be `localhost:50051` natively vs. the Unix socket in
+compose). That section also has a common-errors table and covers the S3 snapshot/encoder
+cache: it's marked done via an empty `.s3_download_done` file per cache dir and **never
+diffed against S3 again** — rebuilding a snapshot in place (same `snapshots/vN` path)
+leaves every machine with a marker silently serving the stale build; bump the version
+directory instead of overwriting it.
 
 ```bash
-cp .env.example .env      # fill in PG_PASS, S3 keys, LLM key
+cp .env.example .env      # fill in AWS/S3 keys, LLM key (PG_PASS only matters for offline ingest)
 make proto                # regenerate gRPC stubs — ALWAYS run first, and after any .proto edit
 make dev                  # docker-compose.yml + docker-compose.dev.yml, hot reload, debug ports
 make up / make down       # full stack, detached
 make logs S=be            # tail logs for one service
-make migrate              # alembic upgrade head (via be container)
 make test                 # pytest inside be + searchcore containers
 make fmt / make lint      # ruff format / check on services/{be,core,ingest}/src
 make bench                # latency bench, expects p50<60ms p95<150ms without LLM
-make warm                 # warm hydration cache
 make snapshot-pull VER=v3 / make snapshot-swap VER=v3   # pull/hot-swap a new index snapshot
 make check-hw             # verify NVMe + AVX before deploying core
 ```
+
+There's no `make migrate`/`make warm` — see the Postgres/Redis note above; there's nothing
+to migrate and no hydration cache to warm.
 
 ### Running tests directly (matches CI)
 
@@ -83,6 +110,12 @@ in the seam between the two services (wrong proto field, wrong gRPC→HTTP statu
 a mocked core would hide. When adding tests that touch search, prefer extending the existing
 `_write_snapshot`/`write_snapshot` fixture helpers in `conftest.py` over hand-rolling FAISS
 index files.
+
+`ci.yml` installs each service's deps by hand (not `pip install -e .`) into a matrix job per
+service, `fail-fast: false` so all three report instead of stopping at the first failure. If
+you add an import used at module load time (e.g. BE's `clients/s3.py` importing `boto3`), add
+the package to that service's `deps:` line in the matrix or its tests fail to import at all,
+not just the tests touching that code path.
 
 FE: `cd services/fe && npm run dev` / `npm run build` (runs `tsc --noEmit` first) / `npm run preview`.
 
@@ -119,6 +152,16 @@ search returns fewer than `top_k` hits above `min_score` (flagged via `warnings:
 `Filter.tags` is AND'd with every other `Filter` field (`allow`/`deny`, `video_ids`,
 time bounds, etc.) — don't special-case it.
 
+`tag_fallback` firing on a healthy tag is usually `FAISS_EF_SEARCH` set too low, not a bug:
+HNSW only visits ~`ef_search` nodes before applying the `IDSelector`, so a tag covering
+6–10% of the corpus can yield far fewer than `top_k` hits at low `ef_search` even though
+that tag has plenty of matches. Measured on the real corpus (613k points / 13 tags,
+`top_k=300`): `ef_search=2000` → 40–71ms core p50 but only 69–79% recall and frequent
+fallback; `ef_search=10000` → 195–219ms p50, ~0 fallback. Untagged search recall is
+~flat (99.6–100%) across that whole range — only the tagged path is `ef_search`-sensitive.
+Tags under `EXACT_SUBSET_MAX` route through brute-force `exact_subset` instead and aren't
+affected, which is why this bug looks tag-dependent ("works for some topics, not others").
+
 ### Snapshot: the offline↔online contract (second contract after `.proto`)
 
 Produced by `aic-embed-siglip-2026.ipynb`; `services/core` only ever reads it. Lives at
@@ -151,8 +194,12 @@ snapshot.
 ### v1 scope
 
 In scope: text KIS (keyword instance search) and TRAKE (temporal/ordered event chains via
-`SearchTemporal`, ~implemented — see `services/core/src/searchcore/temporal.py` and
-`services/be/src/app/api/search_temporal.py`). **Out of scope**: VKIS (needs a vision tower in
+`SearchTemporal` — implemented and tested on both sides: vectorized pair scoring in
+`services/core/src/searchcore/temporal.py`, `POST /api/search/temporal` in
+`services/be/src/app/api/search_temporal.py`, covered by `test_temporal.py` /
+`test_search_temporal.py`). Temporal defaults to **`use_llm=False`**, the opposite of normal
+search: each event is tag-enriched independently and the results are unioned into one hard
+`Filter`, so a wrong tag on any single event kills the whole chain. **Out of scope**: VKIS (needs a vision tower in
 core — only the text tower is bundled), QA (`has_ocr`/`objects` stages not implemented, so
 `require_ocr` returns 0 results rather than "no such scene"), tier SCENE (only KEYFRAME is
 embedded), sparse/BM25. Check `docs/search-design.md` §9 before assuming a proto field (e.g.
@@ -192,7 +239,8 @@ straight from environment / `.env` (core: plain dataclass + `os.getenv`; BE: pyd
 guessing a variable name. Notable ones: `SC_STUB_MODE=1` makes core return fake results without
 loading a snapshot (useful for BE/FE dev without a real corpus); `SNAPSHOT_DIR`/`ENCODER_PATH`
 (bind mount) win over `SNAPSHOT_S3`/`ENCODER_S3` if both are set; `VECTOR_DIM=0` means "trust
-the manifest, don't check".
+the manifest, don't check". `CLOUDFRONT_DOMAIN` is currently unset/unused — BE's S3 client
+(`services/be/src/app/clients/s3.py`, see `docs/s3-client.md`) goes straight to S3, not CDN.
 
 ## Working conventions
 

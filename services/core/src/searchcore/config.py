@@ -80,7 +80,7 @@ class Config:
     # Ngưỡng này phụ thuộc RAM còn trống của máy, đổi máy phải đo lại điểm vỡ.
     exact_subset_max: int = _int("EXACT_SUBSET_MAX", 100_000)
 
-    # ── TRAKE (docs/superpowers/specs/2026-08-24-temporal-search-design.md) ──────
+    # ── TRAKE (docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md) ──────
     # Top-K candidate rows per event BEFORE joining by video — bounds join cost,
     # not the whole corpus (a full brute-force rerank per event was already measured
     # as too slow for a single query; doing it twice would be worse).
@@ -92,7 +92,7 @@ class Config:
     trake_min_gap_sec: float = _float("TRAKE_MIN_GAP_SEC", 5.0)
     # Hard ceiling on (t2 - t1): pairs further apart are excluded entirely.
     trake_max_gap_sec: float = _float("TRAKE_MAX_GAP_SEC", 120.0)
-    trake_lambda: float = _float("TRAKE_LAMBDA", 0.00557)
+    trake_lambda: float = _float("TRAKE_LAMBDA", 0.00693)
     trake_sim_weight: float = _float("TRAKE_SIM_WEIGHT", 0.8)
     trake_time_weight: float = _float("TRAKE_TIME_WEIGHT", 0.2)
     trake_top_k_chains: int = _int("TRAKE_TOP_K_CHAINS", 20)
