@@ -106,6 +106,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [selected, setSelected] = useState<Result[]>([]);
   const [task, setTask] = useState<Task>("kis");
   const [qaAnswer, setQaAnswer] = useState("");
+  const [csvFileName, setCsvFileName] = useState("");
   const [output, setOutput] = useState("");
   const [framesOpen, setFramesOpen] = useState(false);
   const [neighborFrames, setNeighborFrames] = useState<NeighborFrame[]>([]);
@@ -421,7 +422,10 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `submission-${task}.csv`;
+    const fileName = csvFileName.trim() || `submission-${task}`;
+    link.download = fileName.toLowerCase().endsWith(".csv")
+      ? fileName
+      : `${fileName}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -781,6 +785,19 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         />
                       </div>
                     )}
+                    <div className="mb-2">
+                      <label className="form-label" htmlFor="csv-file-name">
+                        Tên file CSV
+                      </label>
+                      <input
+                        type="text"
+                        id="csv-file-name"
+                        className="form-control"
+                        placeholder={`submission-${task}.csv`}
+                        value={csvFileName}
+                        onChange={(e) => setCsvFileName(e.target.value)}
+                      />
+                    </div>
                     <div className="d-grid gap-2 mb-2">
                       <button
                         className="btn btn-primary"
