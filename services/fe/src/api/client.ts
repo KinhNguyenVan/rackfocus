@@ -1,7 +1,19 @@
 import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalPrepareResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
 import { mockNeighbors, mockSearch, mockTemporalSearch } from "./mock";
 
-const USE_MOCK = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_USE_MOCK !== "false";
+// Mock là OPT-IN: phải khai `VITE_USE_MOCK=true` mới bật.
+//
+// Trước đây điều kiện là `!== "false"`, tức KHÔNG khai gì thì mock BẬT. Hậu quả: FE gọi
+// mock trong khi backend thật đã chạy, và không có dấu hiệu nào ngoài chữ
+// "frontend_mock" nằm lẫn trong `warnings` — người dùng thấy kết quả trông hợp lý (đúng
+// video, đúng ảnh) nên tin là thật. Chính lúc thi thì đó là kiểu sai tệ nhất.
+//
+// Tệ hơn: `ops/runpod/Dockerfile` chạy `npm run build` mà không truyền biến này, nên
+// bundle nướng trong image cũng ở chế độ mock. FE deploy lên RunPod TRẢ TOÀN DỮ LIỆU GIẢ.
+//
+// Chiều mặc định phải là an toàn: thiếu cấu hình nghĩa là "gọi backend thật" (sai thì lộ
+// ra ngay bằng lỗi mạng), chứ không phải "trả dữ liệu giả" (sai thì im lặng).
+const USE_MOCK = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_USE_MOCK === "true";
 
 export async function search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse> {
 	if (USE_MOCK) return Promise.resolve(mockSearch(request));

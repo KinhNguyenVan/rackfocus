@@ -16,7 +16,12 @@ COPY services/fe/ ./
 # Không cần VITE_BE_TARGET: FE gọi đường dẫn TƯƠNG ĐỐI (/api/search,
 # /api/neighbors) và Caddy proxy sang BE. Nhờ vậy URL pod đổi mỗi lần tạo lại pod
 # mà không phải build lại FE.
-RUN npm run build
+#
+# VITE_USE_MOCK=false khai TƯỜNG MINH dù client.ts đã mặc định opt-in: bundle nướng vào
+# ảnh là thứ chạy lúc thi, nên không để nó phụ thuộc vào một giá trị mặc định ở file
+# khác. Trước đây thiếu dòng này + mặc định ngược chiều = FE deploy trả toàn dữ liệu giả
+# mà chỉ có chữ "frontend_mock" lẫn trong `warnings` làm dấu hiệu.
+RUN VITE_USE_MOCK=false npm run build
 
 # ── Runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim
