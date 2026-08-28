@@ -7,6 +7,7 @@ import { VideoPlayer } from "./components/VideoPlayer";
 import { useSearch } from "./hooks/useSearch";
 import { useTemporalSearch } from "./hooks/useTemporalSearch";
 import { TemporalQueryBuilder } from "./components/TemporalQueryBuilder";
+import { TemporalPrepare } from "./components/TemporalPrepare";
 import { TemporalChainCard } from "./components/TemporalChainCard";
 import "./styles/global.css";
 
@@ -95,6 +96,9 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [event2, setEvent2] = useState("");
   const [submittedEvent1, setSubmittedEvent1] = useState("");
   const [submittedEvent2, setSubmittedEvent2] = useState("");
+  // null = "không qua prepare" -> BE quyết theo use_llm (luồng nhập tay).
+  // [] = "user đã bỏ tick hết" -> search toàn kho. Hai cái KHÁC nhau.
+  const [submittedTags, setSubmittedTags] = useState<number[] | null>(null);
   const [selected, setSelected] = useState<Result[]>([]);
   const [task, setTask] = useState<Task>("kis");
   const [qaAnswer, setQaAnswer] = useState("");
@@ -201,6 +205,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     submittedEvent2,
     useLlm,
     submittedExactMode,
+    submittedTags,
   );
 
   const results = useMemo(
@@ -289,8 +294,12 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   function search(event: FormEvent) {
     event.preventDefault();
     if (searchMode === "temporal") {
+      // Bật LLM: TemporalPrepare tự có nút riêng (Phân tích / Tìm chuỗi), form submit
+      // không có việc gì để làm.
+      if (useLlm) return;
       if (event1.trim() && event2.trim()) {
         setSelected([]);
+        setSubmittedTags(null);      // nhập tay -> để BE quyết theo use_llm
         setSubmittedExactMode(exactMode);
         setSubmittedEvent1(event1.trim());
         setSubmittedEvent2(event2.trim());
@@ -521,10 +530,7 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         name="searchTopMode"
                         id="modeTemporal"
                         checked={searchMode === "temporal"}
-                        onChange={() => {
-                          setSearchMode("temporal");
-                          setUseLlm(false);
-                        }}
+                        onChange={() => setSearchMode("temporal")}
                       />
                       <label
                         className="btn btn-outline-secondary"
@@ -534,7 +540,24 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                       </label>
                     </div>
                     <form onSubmit={search}>
-                      {searchMode === "temporal" ? (
+                      {searchMode === "temporal" && useLlm ? (
+                        <TemporalPrepare
+                          onSearch={(e1, e2, tags) => {
+                            setSelected([]);
+                            setSubmittedTags(tags);
+                            setSubmittedExactMode(exactMode);
+                            setSubmittedEvent1(e1.trim());
+                            setSubmittedEvent2(e2.trim());
+                          }}
+                          onRunAsKis={(text) => {
+                            setSearchMode("kis");
+                            setSelected([]);
+                            setQuery(text);
+                            setSubmittedExactMode(exactMode);
+                            setSubmitted(text);
+                          }}
+                        />
+                      ) : searchMode === "temporal" ? (
                         <TemporalQueryBuilder
                           event1={event1}
                           event2={event2}
@@ -593,7 +616,13 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         role="switch"
                         id="useLlmSwitch"
                         checked={useLlm}
-                        onChange={(e) => setUseLlm(e.target.checked)}
+                        onChange={(e) => {
+                          setUseLlm(e.target.checked);
+                          // Tắt LLM = "search toàn bộ, không lọc" đúng như nhãn bên
+                          // dưới. Giữ lại tag của lần prepare trước thì vẫn lọc ngầm --
+                          // đúng cái user vừa cố ý tắt đi.
+                          if (!e.target.checked) setSubmittedTags(null);
+                        }}
                       />
                       <label
                         className="form-check-label small"
