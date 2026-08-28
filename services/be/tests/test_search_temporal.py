@@ -1,6 +1,6 @@
 """Test POST /api/search/temporal: 2 event, union tag khi bật LLM, chain 2 hit.
 
-Xem docs/superpowers/specs/2026-08-24-temporal-search-design.md. conftest.py's snap
+Xem docs/superpowers/specs/2026-08-28-temporal-llm-segmentation-design.md. conftest.py's snap
 fixture: 200 row, video luân phiên theo i%4, keyframe_time=i*0.2s/row.
 """
 
@@ -53,6 +53,37 @@ def test_temporal_use_llm_true_unions_both_events_tags(client, llm):
 def test_temporal_empty_event_rejected(client):
     assert client.post("/api/search/temporal",
                        json={"event1": "", "event2": "x"}).status_code == 422
+
+
+# ── tags tường minh ─────────────────────────────────────────────────────────
+
+# KHÔNG khẳng định gì về d["tags_used"] trong ba test dưới. `search_with_fallback` xoá
+# tags_used về () mỗi khi tag_fallback nổ (services/core/src/searchcore/search.py:166),
+# mà snapshot test chỉ có 200 row / 5 tag với DEFAULT_TOP_K=10 -- fallback nổ hay không
+# phụ thuộc vector ngẫu nhiên của FakeEncoder. Khẳng định vào đó là test đỏ vì lý do
+# không liên quan. Hợp đồng đang test ở đây là "có tags thì KHÔNG gọi LLM", và
+# `llm.calls` đo đúng cái đó.
+
+
+def test_tags_tuong_minh_thi_bo_qua_llm(client, llm):
+    search_temporal(client, use_llm=True, tags=[0])
+    assert llm.calls == 0          # tags có sẵn -> không cần LLM chọn tag nữa
+
+
+def test_tags_rong_nghia_la_khong_loc(client, llm):
+    """[] = "user bỏ tick hết, search toàn kho" — KHÁC None, và cũng không gọi LLM.
+
+    Nếu [] bị gộp nhầm với None thì use_llm=True sẽ kéo LLM chạy -> llm.calls == 2.
+    """
+    search_temporal(client, use_llm=True, tags=[])
+    assert llm.calls == 0
+
+
+def test_tags_vang_mat_giu_nguyen_hanh_vi_cu(client, llm):
+    """None = "không qua prepare" -> vẫn quyết định theo use_llm như trước."""
+    llm.reply = {"tags": [2], "enriched": "", "confidence": 1.0}
+    search_temporal(client, use_llm=True)
+    assert llm.calls == 2          # enrich riêng cho từng event, như cũ
 
 
 # ── /api/search/temporal/prepare ────────────────────────────────────────────
