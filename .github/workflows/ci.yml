@@ -59,11 +59,22 @@ jobs:
       - name: buf lint
         run: buf lint proto
 
-      # Chỉ so breaking change trên PR — push vào main là so với chính nó
-      - name: Lấy nhánh main về local
-        if: github.event_name == 'pull_request'
-        run: git fetch origin main:main
-
+      # Chỉ so breaking change trên PR — push vào main là so với chính nó.
+      #
+      # So với `origin/main` (ref remote-tracking), KHÔNG phải branch `main` local.
+      # Bản cũ chạy `git fetch origin main:main` rồi `--against .git#branch=main`, và
+      # chết ở đây:
+      #
+      #   fatal: refusing to fetch into branch 'refs/heads/main' checked out at ...
+      #
+      # Vì actions/checkout@v4 làm đúng câu này (thấy trong log run 33154612998):
+      #   git checkout --progress --force -B main refs/remotes/origin/main
+      #   Switched to a new branch 'main'
+      # Tức `main` LÀ branch đang checkout, mà git không cho fetch vào branch đang
+      # checkout. Bước đó vừa hỏng vừa vô nghĩa: `main` đã trỏ đúng origin/main rồi.
+      #
+      # `fetch-depth: 0` ở trên đảm bảo refs/remotes/origin/main luôn có sẵn, nên
+      # không cần fetch thêm gì.
       - name: buf breaking
         if: github.event_name == 'pull_request'
-        run: buf breaking proto --against ".git#branch=main,subdir=proto"
+        run: buf breaking proto --against ".git#ref=origin/main,subdir=proto"
