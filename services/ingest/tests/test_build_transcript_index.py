@@ -18,6 +18,18 @@ from ingest.build_transcript_index import (
 )
 
 
+def _load_asr_module():
+    """Nạp `ingest/stages/asr.py` như module rời (xem test parity ở cuối file)."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(__file__), "..", "src", "ingest", "stages", "asr.py")
+    spec = importlib.util.spec_from_file_location("_asr_standalone", os.path.abspath(path))
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _keyframes(frames):
     return [
         {"frame": f, "timestamp": round(f / 25.0, 3), "keyframe_url": f"keyframes/{f:06d}.webp"}
@@ -98,6 +110,22 @@ def test_diacritics_preserved_khi_khac_khi(tmp_path):
     db = build_transcript_db(rows, str(tmp_path / "t.sqlite"))
     assert _query(db, "khí*")      # có dấu -> khớp
     assert not _query(db, "xyz*")  # không có -> rỗng
+    # Assertion CHỐT của tokenizer: bỏ `remove_diacritics 0` khỏi create_schema thì FTS5 lột
+    # dấu và "khi*" khớp "khí hậu" -> dòng này đỏ. Hai assert trên KHÔNG canh được điều đó
+    # (chúng xanh ở cả hai tokenizer), nên nếu chỉ có chúng thì cấu hình tiếng Việt không
+    # được test nào bảo vệ.
+    assert not _query(db, "khi*")
+
+
+def test_build_transcript_db_refuses_empty_rows(tmp_path):
+    # DB đúng schema + 0 row là ca lỗi im lặng nhất: BE mở được, endpoint trả 200 items=[]
+    # cho mọi keyword. Phải raise và KHÔNG để lại file.
+    import pytest
+
+    out = tmp_path / "empty.sqlite"
+    with pytest.raises(ValueError, match="0 row"):
+        build_transcript_db([], str(out))
+    assert not out.exists()
 
 
 # ============ build từ snapshot payload + ASR transcript (không cần Postgres) ============
@@ -163,3 +191,105 @@ def test_rows_from_payload_and_transcripts(tmp_path):
     db = build_transcript_db(rows, str(tmp_path / "t.sqlite"))
     hits = _query(db, "khí*")
     assert [h[1] for h in hits] == [0]
+
+
+def test_transcript_json_sai_schema_khong_bi_coi_la_khong_co_thoai(tmp_path, capsys):
+    """JSON hỏng/thiếu `segments` phải được ĐẾM RIÊNG, không im lặng thành 0 row.
+
+    `.get("segments", [])` biến "file tải dở" thành "video này không ai nói gì" — cùng kết
+    quả với video thật sự im lặng, nên tải S3 lỗi một nửa vẫn build ra index trông bình thường.
+    """
+    import json
+
+    payload = str(tmp_path / "payload.parquet")
+    _write_payload(payload, [
+        {"video_name": "OK", "scene_idx": 0, "start_sec": 0.0, "end_sec": 5.0,
+         "clip_key": "https://cdn/ok.mp4", "keyframe_key": ""},
+        {"video_name": "TRUNCATED", "scene_idx": 0, "start_sec": 0.0, "end_sec": 5.0,
+         "clip_key": "https://cdn/t.mp4", "keyframe_key": ""},
+        {"video_name": "NOSEGMENTS", "scene_idx": 0, "start_sec": 0.0, "end_sec": 5.0,
+         "clip_key": "https://cdn/n.mp4", "keyframe_key": ""},
+    ])
+    tx = tmp_path / "transcripts"
+    tx.mkdir()
+    (tx / "OK.json").write_text(json.dumps({
+        "segments": [{"start": 1.0, "end": 2.0, "text": "có thoại"}]}), encoding="utf-8")
+    (tx / "TRUNCATED.json").write_text('{"segments": [{"start": 1.0,', encoding="utf-8")
+    (tx / "NOSEGMENTS.json").write_text('{"video_id": "NOSEGMENTS"}', encoding="utf-8")
+
+    rows = rows_from_payload_and_transcripts(payload, str(tx))
+    assert [r["video_name"] for r in rows] == ["OK"]
+    out = capsys.readouterr().out
+    assert "json lỗi/sai schema: 2" in out
+    assert "TRUNCATED.json" in out and "NOSEGMENTS.json" in out
+
+
+def test_cli_khong_xoa_index_cu_khi_build_that_bai(tmp_path, monkeypatch):
+    """Build lỗi phải để NGUYÊN index đang dùng.
+
+    Trước đây CLI `os.remove(db_path)` NGAY TỪ ĐẦU rồi mới đi tải S3 + ghép, nên chạy lại
+    lệnh với `SNAPSHOT_S3`/prefix sai là xoá mất index đang phục vụ, đổi lấy một file rỗng.
+    Giờ ghi vào `<db>.tmp` rồi `os.replace`, nên mọi lỗi đều không đụng tới bản cũ.
+    """
+    import pytest
+
+    from ingest.build_transcript_index import main
+
+    # payload có 1 video nhưng KHÔNG có file transcript nào -> ghép ra 0 row.
+    payload = str(tmp_path / "payload.parquet")
+    _write_payload(payload, [{"video_name": "A", "scene_idx": 0, "start_sec": 0.0,
+                              "end_sec": 5.0, "clip_key": "https://cdn/a.mp4",
+                              "keyframe_key": ""}])
+    tx = tmp_path / "transcripts"
+    tx.mkdir()
+
+    db = tmp_path / "transcript.sqlite"
+    db.write_bytes(b"INDEX CU DANG DUNG")
+
+    monkeypatch.setattr("sys.argv", [
+        "build_transcript_index", "--payload", payload, "--transcripts", str(tx),
+        "--db", str(db)])
+    with pytest.raises(ValueError, match="0 row"):
+        main()
+
+    assert db.read_bytes() == b"INDEX CU DANG DUNG"
+    assert not (tmp_path / "transcript.sqlite.tmp").exists()
+
+
+def test_parity_voi_stages_asr_assign_script_to_scenes():
+    """`assign_segments_to_scenes` phải cho ĐÚNG kết quả `stages.asr.assign_script_to_scenes`.
+
+    Hai hàm là bản sao của nhau (một dùng start_sec/end_sec từ payload, một dùng
+    start_time/end_time từ scene JSON) và cùng quyết định scene nào có thoại. Lệch nhau =
+    transcript index không khớp cờ `has_speech` của snapshot, mà không gì báo.
+
+    Nạp `asr.py` THEO ĐƯỜNG DẪN, không `from ingest.stages.asr import ...`: package
+    `ingest.stages.__init__` import sẵn `media` -> cv2, và cv2 không nằm trong deps của job
+    test ingest ở CI. Bản thân `asr.py` chỉ định nghĩa hằng ở mức module (chunkformer/torch
+    import trong hàm) nên nạp rời được. Đây cũng là lý do `build_transcript_index.py` chép
+    hàm này thay vì import.
+    """
+    assign_script_to_scenes = _load_asr_module().assign_script_to_scenes
+
+    bounds = [(0.0, 5.0), (5.0, 10.0), (10.0, 12.0)]
+    segments = [
+        {"start": 1.0, "end": 3.0, "text": "câu một"},
+        {"start": 4.0, "end": 8.0, "text": "câu hai"},     # mid 6.0 -> scene 1
+        {"start": 9.0, "end": 11.0, "text": "câu ba"},     # mid 10.0 -> ĐÚNG BIÊN 1|2
+        {"start": 11.5, "end": 13.0, "text": "câu bốn"},   # mid 12.25 -> ngoài mọi scene
+    ]
+
+    payload_scenes = [
+        {"scene_idx": i, "start_sec": lo, "end_sec": hi} for i, (lo, hi) in enumerate(bounds)
+    ]
+    asr_scenes = [
+        {"scene_id": i, "start_time": lo, "end_time": hi} for i, (lo, hi) in enumerate(bounds)
+    ]
+
+    got = assign_segments_to_scenes(payload_scenes, segments)
+    assign_script_to_scenes(asr_scenes, segments)
+    want = {sc["scene_id"]: sc["script"] for sc in asr_scenes if sc["script"]}
+
+    assert got == want
+    # Midpoint đúng biên chung: cả hai dùng `lo <= mid <= hi` nên segment đó vào CẢ HAI scene.
+    assert "câu ba" in got[1] and "câu ba" in got[2]

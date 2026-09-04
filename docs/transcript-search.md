@@ -35,12 +35,22 @@ Không có `Videos_*` (video đầy đủ) → phát bằng scene clip (`Keyscen
 
 ## Dựng index
 
-Một lệnh, không cần Postgres (tự tải payload + mọi `Transcripts_*` từ S3, ghép, dựng sqlite):
+Một lệnh, không cần Postgres (tự tải payload + mọi `Transcripts_*` từ S3, ghép, dựng sqlite).
+
+macOS/Linux (bash/zsh) — chạy từ gốc repo:
+
+```bash
+export PYTHONPATH="$PWD/services/ingest/src"
+export SNAPSHOT_S3="s3://aic-bucket-2026/snapshots/v2"   # trỏ bản snapshot muốn dùng
+python -m ingest.build_transcript_index --from-s3 --db "$PWD/.tmp/transcript_full.sqlite"
+```
+
+Windows (PowerShell) — thay `C:/rackfocus` bằng đường dẫn repo của bạn:
 
 ```powershell
-$env:PYTHONPATH="D:/bia-word/rackfocus/services/ingest/src"
-$env:SNAPSHOT_S3="s3://aic-bucket-2026/snapshots/v2"   # trỏ bản snapshot muốn dùng
-python -m ingest.build_transcript_index --from-s3 --db D:/bia-word/.tmp/transcript_full.sqlite
+$env:PYTHONPATH="C:/rackfocus/services/ingest/src"
+$env:SNAPSHOT_S3="s3://aic-bucket-2026/snapshots/v2"
+python -m ingest.build_transcript_index --from-s3 --db C:/rackfocus/.tmp/transcript_full.sqlite
 ```
 
 `--from-s3` tự nạp `.env` (AWS_*). Các cách khác:
@@ -49,18 +59,70 @@ python -m ingest.build_transcript_index --from-s3 --db D:/bia-word/.tmp/transcri
 
 Tokenizer FTS5 `unicode61 remove_diacritics 0` → **giữ dấu tiếng Việt** (`khi` ≠ `khí`).
 
+### Builder fail-closed ở chỗ nào
+
+Lệnh trên **ghi atomic**: dựng vào `<db>.tmp` rồi mới `os.replace` sang chỗ thật, nên mọi
+lỗi dưới đây để **nguyên bản index cũ đang dùng**:
+
+| Ca | Hành vi |
+|---|---|
+| Không thấy file nào dưới `Transcripts_*` (prefix/bucket/credential sai) | `RuntimeError`, dừng |
+| Ghép ra 0 row (tên video payload ≠ tên file transcript) | `ValueError`, không ghi file |
+| Transcript JSON hỏng / thiếu field `segments` | in `[BAD] <file>` + đếm riêng ở dòng tổng kết |
+| Ctrl-C giữa lúc build | chỉ mất `<db>.tmp` |
+
+Cụ thể là **không** còn ca "index 0 row nhưng đúng schema" — BE cũng từ chối mở file như vậy
+(xem `transcript.py::TranscriptIndex.__init__`), vì nó làm endpoint trả `200 {"items": []}`
+cho mọi keyword, y hệt "không ai nói câu đó".
+
+⚠️ **`transcript.sqlite` nằm ngoài checksum của snapshot.** `manifest.json` chỉ ký các file do
+`build_index.py` sinh, mà `build_index.py` hiện là stub và **không** gọi builder này. Nghĩa là
+ghép DB dựng theo `snapshots/v1` với core đang chạy `snapshots/v2` sẽ **không bị phát hiện ở
+tầng nào** — kết quả là click gợi ý mở sai clip. Người vận hành phải tự đảm bảo `SNAPSHOT_S3`
+lúc dựng DB trùng bản snapshot core đang chạy.
+
 ## Chạy / test cục bộ
 
 Set `TRANSCRIPT_DB_PATH` trong `.env` trỏ file sqlite vừa dựng, rồi:
 
-1. **BE local** (phục vụ transcript; không cần core): `./run-be.ps1` — chờ log
-   `transcript index mở từ …`.
+1. **BE local** (phục vụ transcript; **không cần core** — endpoint này không đi qua gRPC):
+
+   ```bash
+   export PYTHONPATH="$PWD/services/be/src"
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+   Chờ log `transcript index mở từ … (N scene có thoại)`. Thấy
+   `không mở được transcript index (…)` thay vì dòng đó nghĩa là file thiếu/hỏng/rỗng —
+   endpoint sẽ trả 503 kèm lý do, và `/readyz` báo `"transcript_index": "failed"`.
 2. **FE**: nếu search vector vẫn đi RunPod, set `VITE_TRANSCRIPT_TARGET=http://localhost:8000`
    để **chỉ** `/api/transcript` về BE local, phần còn lại giữ RunPod (opt-in ở
    `vite.config.ts`). Sau đó `npm run dev`.
 3. UI: KIS mode → bật switch **"Tìm transcript"** → gõ ≥2 ký tự (đúng dấu).
 
 Kiểm tra nhanh không cần FE: `http://localhost:8000/api/transcript/suggest?q=<keyword>`.
+
+Trạng thái index xem ở `/readyz` → field `transcript_index`:
+
+| Giá trị | Nghĩa |
+|---|---|
+| `loaded` | mở được, endpoint chạy |
+| `disabled` | `TRANSCRIPT_DB_PATH` rỗng — tắt có ý thức, endpoint 503 |
+| `failed` | có cấu hình nhưng file thiếu/hỏng/0 row — **sự cố**, endpoint 503 |
+
+Cả `disabled` và `failed` đều cho 503; field này là cách duy nhất phân biệt "chưa bật" với
+"bật mà hỏng".
+
+## Giới hạn triển khai: hiện chỉ chạy LOCAL
+
+Tính năng này **chưa chạy trên endpoint RunPod**. `ops/runpod/*` không được sửa trong PR
+thêm tính năng: image không có bước tải `transcript.sqlite` từ S3, và `TRANSCRIPT_DB_PATH`
+không được set trong `start.sh`. Nên trên RunPod `/api/transcript/suggest` luôn trả 503
+(`transcript_index: disabled`) — đúng thiết kế opt-in, nhưng nghĩa là muốn dùng lúc thi thì
+phải chạy BE local (bước 1 ở trên) và trỏ `VITE_TRANSCRIPT_TARGET` về đó.
+
+Để chạy được trên RunPod cần thêm, sau này: tải `transcript.sqlite` vào `$MODEL_CACHE_DIR`
+(hoặc network volume) trong `ops/runpod/start.sh`, rồi export `TRANSCRIPT_DB_PATH` trỏ vào đó.
 
 ## Reload khi thêm video mới trên S3
 

@@ -16,16 +16,29 @@ from collections.abc import Callable
 
 log = logging.getLogger("app.services.transcript")
 
+# Tên bảng phải khớp `ingest/build_transcript_index.py` (META_TABLE/FTS_TABLE).
+META_TABLE = "scenes_meta"
+FTS_TABLE = "transcript_fts"
+
 # Token = cụm chữ/số liên tiếp (giữ Unicode để không cắt vụn tiếng Việt có dấu). Mọi ký tự
 # khác (kể cả toán tử FTS5 " * : ( )) bị loại -> query người dùng không thể phá cú pháp MATCH.
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 _QUERY_SQL = (
     "SELECT m.video_name, m.scene_idx, m.start_sec, m.end_sec, m.clip_key, m.keyframe_key,"
-    "       snippet(transcript_fts, 0, '[', ']', '…', 12) AS snippet "
-    "FROM transcript_fts JOIN scenes_meta m ON m.rowid = transcript_fts.rowid "
-    "WHERE transcript_fts MATCH ? ORDER BY bm25(transcript_fts) LIMIT ?"
+    f"       snippet({FTS_TABLE}, 0, '[', ']', '…', 12) AS snippet "
+    f"FROM {FTS_TABLE} JOIN {META_TABLE} m ON m.rowid = {FTS_TABLE}.rowid "
+    f"WHERE {FTS_TABLE} MATCH ? ORDER BY bm25({FTS_TABLE}) LIMIT ?"
 )
+
+
+class TranscriptIndexError(RuntimeError):
+    """Index không dùng được (thiếu/hỏng/rỗng, hoặc truy vấn lỗi ở tầng SQLite).
+
+    Tách riêng khỏi `Exception` chung để endpoint map được sang 503 ("chưa sẵn sàng")
+    thay vì để lọt lên FastAPI thành 500 ("lỗi server không rõ") — 503 nói đúng bản
+    chất (thiếu artifact vận hành) và khớp tài liệu + comment ở `main.py`.
+    """
 
 
 def build_match(q: str) -> str:
@@ -67,8 +80,35 @@ class TranscriptIndex:
 
     def __init__(self, db_path: str, url_resolver: Callable[[str], str] | None = None):
         self._uri = f"file:{db_path}?mode=ro"
-        # Mở-đóng 1 lần lúc khởi tạo để FAIL-CLOSED nếu thiếu file (không im lặng trả rỗng).
-        sqlite3.connect(self._uri, uri=True).close()
+        # FAIL-CLOSED lúc khởi tạo. Phải TRUY VẤN THẬT, không chỉ connect+close:
+        # `sqlite3.connect(...)` mở lazy, nên file rác (không phải sqlite) và file sqlite
+        # hợp lệ nhưng THIẾU BẢNG `scenes_meta` đều KHÔNG raise ở connect — chỉ thiếu hẳn
+        # file mới raise. Cả hai ca đó lọt qua thì mọi suggest() sau này vỡ ở tầng HTTP
+        # (500) thay vì chặn ngay lúc khởi động.
+        #
+        # `count(*) == 0` cũng là lỗi: build bị kill giữa `CREATE TABLE` (tự commit) và
+        # `finalize()` (chỗ commit INSERT duy nhất) để lại file ĐÚNG SCHEMA, 0 ROW. Khi đó
+        # endpoint trả 200 {"items": []} cho mọi keyword — không phân biệt được với
+        # "không có câu thoại nào khớp", nên sai kiểu im lặng, đúng lúc thi.
+        # `connect` nằm TRONG try: thiếu file thì chính nó raise, còn file rác/thiếu bảng
+        # thì `execute` mới raise — gom cả hai về một loại lỗi để caller không phải phân
+        # biệt `OperationalError` với `DatabaseError`.
+        try:
+            conn = sqlite3.connect(self._uri, uri=True)
+            try:
+                (n,) = conn.execute(f"SELECT count(*) FROM {META_TABLE}").fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as ex:
+            raise TranscriptIndexError(
+                f"transcript index không đọc được ({type(ex).__name__}: {ex}): {db_path}"
+            ) from ex
+        if not n:
+            raise TranscriptIndexError(
+                f"transcript index RỖNG (0 row trong {META_TABLE}) — build bị dở dang: "
+                f"{db_path}"
+            )
+        self.row_count = int(n)
         self._resolve = url_resolver or _default_resolver()
 
     def _connect(self) -> sqlite3.Connection:
@@ -81,6 +121,12 @@ class TranscriptIndex:
         conn = self._connect()
         try:
             rows = conn.execute(_QUERY_SQL, (match, limit)).fetchall()
+        except sqlite3.Error as ex:
+            # File bị đổi/hỏng SAU khi khởi động xong (swap snapshot, xoá file, FTS lệch
+            # bảng meta). Không bọc thì `sqlite3.DatabaseError` chạy thẳng lên FastAPI =
+            # 500 cho MỌI keystroke, mãi mãi. 503 nói đúng chuyện: artifact vận hành hỏng.
+            log.error("truy vấn transcript index lỗi: %s: %s", type(ex).__name__, ex)
+            raise TranscriptIndexError(f"transcript index lỗi: {ex}") from ex
         finally:
             conn.close()
         out = []
@@ -104,13 +150,29 @@ class TranscriptIndex:
 # ── instance module-level (nạp ở lifespan) ──────────────────────────
 _index: TranscriptIndex | None = None
 
+# "disabled" = TRANSCRIPT_DB_PATH rỗng (tính năng tắt có ý thức) | "loaded" = mở được |
+# "failed" = có cấu hình nhưng mở lỗi. Ba trạng thái này phải PHÂN BIỆT ĐƯỢC từ ngoài:
+# cả "disabled" và "failed" đều làm endpoint trả 503, nhưng một cái là cố ý còn cái kia
+# là sự cố cần sửa. Không có field này thì người vận hành nhìn 503 không biết đường nào.
+_status: str = "disabled"
+
 
 def load(db_path: str) -> None:
-    """Mở index. Lỗi (thiếu file) ném ra để lifespan log — endpoint sẽ trả 503."""
-    global _index
-    _index = TranscriptIndex(db_path)
-    log.info("transcript index mở từ %s", db_path)
+    """Mở index. Lỗi (thiếu/hỏng/rỗng file) ném ra để lifespan log — endpoint trả 503."""
+    global _index, _status
+    try:
+        index = TranscriptIndex(db_path)
+    except Exception:
+        _index, _status = None, "failed"
+        raise
+    _index, _status = index, "loaded"
+    log.info("transcript index mở từ %s (%d scene có thoại)", db_path, index.row_count)
 
 
 def get() -> TranscriptIndex | None:
     return _index
+
+
+def status() -> str:
+    """"loaded" | "failed" | "disabled" — cho /readyz. Xem `_status`."""
+    return _status

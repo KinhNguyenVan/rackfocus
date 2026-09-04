@@ -12,9 +12,11 @@ Key `clip_key`/`keyframe_key` dựng ĐÚNG công thức của `stages/embed.py:
 Tokenizer `unicode61 remove_diacritics 0`: GIỮ dấu tiếng Việt (mặc định của FTS5 lột dấu,
 làm "khí" khớp cả "khi"). Tách token theo khoảng trắng/ký tự không phải chữ.
 
-Tích hợp: `build_index.py` (dựng snapshot) gọi `build_transcript_db(...)` ghi
-`transcript.sqlite` vào thư mục snapshot rồi thêm vào `manifest.json` checksums. CLI ở cuối
-file dựng trực tiếp từ output ingest (`scene_<name>.json` + `keyframes.json`) để test/chạy tay.
+CHẠY BẰNG CLI ở cuối file — không có caller nào khác. `build_index.py` KHÔNG gọi module này
+(nó đang là stub 1 dòng), nên `transcript.sqlite` nằm NGOÀI hợp đồng checksum của snapshot
+(`manifest.json`): ghép một DB dựng theo `snapshots/v1` với `snapshots/v2` là không phát hiện
+được ở tầng nào. Cho tới khi `build_index.py` được viết, người vận hành phải tự đảm bảo
+`SNAPSHOT_S3` lúc dựng DB trùng bản snapshot mà core đang chạy — xem docs/transcript-search.md.
 """
 
 from __future__ import annotations
@@ -129,7 +131,19 @@ def build_transcript_db(rows: list[dict], out_path: str) -> str:
     """Dựng file SQLite FTS5 hoàn chỉnh từ danh sách rows. Trả `out_path`.
 
     Idempotent theo file: mở lại file cũ vẫn append; muốn build sạch thì xoá file trước.
+
+    `rows` rỗng -> RAISE, không ghi file. Một DB đúng schema với 0 row là ca lỗi TỆ NHẤT
+    của tính năng này: BE mở được, endpoint trả 200 {"items": []} cho mọi keyword, và
+    "không có kết quả" trông y như "không ai nói câu đó". Rỗng ở đây gần như luôn nghĩa là
+    prefix S3 sai / thiếu credential / payload lệch transcript, tức là lỗi cấu hình cần
+    thấy NGAY lúc build, không phải lúc thi.
     """
+    if not rows:
+        raise ValueError(
+            f"0 row — KHÔNG ghi index rỗng ({out_path}). Kiểm tra: payload.parquet có đúng "
+            "video không, thư mục transcript có file <video_name>.json không, và tên video "
+            "hai bên có trùng không."
+        )
     conn = sqlite3.connect(out_path)
     try:
         create_schema(conn)
@@ -213,13 +227,28 @@ def rows_from_payload_and_transcripts(payload_path: str, transcripts_dir: str) -
     by_video = scenes_from_payload(payload_path)
     rows: list[dict] = []
     missing = 0
+    bad = 0
     for vn, scenes in by_video.items():
         tpath = os.path.join(transcripts_dir, f"{vn}.json")
         if not os.path.exists(tpath):
             missing += 1
             continue
-        with open(tpath, encoding="utf-8") as f:
-            segments = json.load(f).get("segments", [])
+        # File CÓ nhưng không đọc/parse được, hoặc thiếu field `segments`: trước đây
+        # `.get("segments", [])` biến ca này thành "video không có thoại" và nó chỉ hiện ra
+        # dưới dạng số row thấp hơn kỳ vọng — lẫn hẳn vào `missing` (vốn chỉ đếm
+        # file-not-exists). Đếm riêng + in từng file để tải S3 dở dang không im lặng trôi qua.
+        try:
+            with open(tpath, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError) as ex:
+            bad += 1
+            print(f"  [BAD] {tpath}: {type(ex).__name__}: {ex}")
+            continue
+        segments = doc.get("segments") if isinstance(doc, dict) else None
+        if not isinstance(segments, list):
+            bad += 1
+            print(f"  [BAD] {tpath}: thiếu field 'segments' dạng list")
+            continue
         scripts = assign_segments_to_scenes(scenes, segments)
         for sc in scenes:
             script = scripts.get(sc["scene_idx"])
@@ -236,7 +265,8 @@ def rows_from_payload_and_transcripts(payload_path: str, transcripts_dir: str) -
             })
     n_tx = len(glob.glob(os.path.join(transcripts_dir, "*.json")))
     print(f"payload: {len(by_video)} video; transcript json: {n_tx}; "
-          f"video không có transcript: {missing}; rows(scene có thoại): {len(rows)}")
+          f"video không có transcript: {missing}; json lỗi/sai schema: {bad}; "
+          f"rows(scene có thoại): {len(rows)}")
     return rows
 
 
@@ -319,7 +349,32 @@ def download_s3_inputs(dest_root: str, snapshot_s3: str | None = None,
                     client.download_file(bucket, key, dest)
                 n += 1
     print(f"transcript json: {n} file -> {tx_dir}")
+    # 0 file = prefix sai, bucket sai, hoặc credential không thấy object nào. Trước đây chỉ
+    # in "transcript json: 0 file" rồi đi tiếp -> ghép ra 0 row -> ghi ra một DB rỗng nhưng
+    # hợp lệ. Chặn ngay ở đây thì lỗi hiện ra ở chỗ gây ra nó, kèm prefix để sửa.
+    if n == 0:
+        raise RuntimeError(
+            f"không thấy file transcript nào dưới s3://{bucket}/{transcript_prefix}* "
+            "(cần key dạng '<prefix>/transcripts/<video_name>.json'). Kiểm tra "
+            "transcript_prefix, AWS_BUCKET_NAME và credential."
+        )
     return payload_path, tx_dir
+
+
+def _fresh_tmp_path(db_path: str) -> str:
+    """Đường dẫn tạm cạnh `db_path`, đã dọn tàn dư của lần chạy trước.
+
+    Cạnh (không phải /tmp) để `os.replace` là rename trong CÙNG filesystem = atomic.
+    Phải dọn trước: `build_transcript_db` mở-append nên tmp sót lại từ lần bị kill sẽ
+    làm row của hai lần build cộng dồn.
+    """
+    import os
+
+    tmp = db_path + ".tmp"
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        if os.path.exists(tmp + suffix):
+            os.remove(tmp + suffix)
+    return tmp
 
 
 def _build_from_ingest_outputs(out_root: str, db_path: str) -> None:
@@ -328,7 +383,8 @@ def _build_from_ingest_outputs(out_root: str, db_path: str) -> None:
 
     from .db import get_conn, get_or_create_video_id
 
-    conn = sqlite3.connect(db_path)
+    tmp = _fresh_tmp_path(db_path)
+    conn = sqlite3.connect(tmp)
     pg = get_conn()
     total = 0
     try:
@@ -338,10 +394,13 @@ def _build_from_ingest_outputs(out_root: str, db_path: str) -> None:
             rows = scene_transcript_rows(video_id, name, keyframes, scenes)
             total += add_rows(conn, rows)
             print(f"{name}: +{len(rows)} scene có transcript")
+        if not total:
+            raise ValueError(f"0 scene có transcript dưới {out_root} — không ghi index rỗng")
         finalize(conn)
     finally:
         conn.close()
         pg.close()
+    os.replace(tmp, db_path)
     print(f"Xong: {total} scene -> {db_path}")
 
 
@@ -374,18 +433,20 @@ def main() -> None:
             if not tx_dir:
                 ap.error("--payload phải đi kèm --transcripts")
         db_path = args.db or os.path.join(os.path.dirname(os.path.abspath(payload)), DB_FILENAME)
-        if os.path.exists(db_path):
-            os.remove(db_path)  # build sạch, tránh append trùng
+        # GHI ATOMIC: dựng vào <db>.tmp rồi `os.replace` sang chỗ thật. Trước đây xoá
+        # `db_path` NGAY TỪ ĐẦU rồi mới đi tải S3 + ghép — nên chạy lại lệnh với
+        # SNAPSHOT_S3/prefix sai là XOÁ MẤT index đang dùng, đổi lấy một file rỗng. Với
+        # thứ tự này, mọi lỗi (0 file S3, 0 row, Ctrl-C giữa build) đều để nguyên bản cũ.
+        tmp = _fresh_tmp_path(db_path)
         rows = rows_from_payload_and_transcripts(payload, tx_dir)
-        build_transcript_db(rows, db_path)
+        build_transcript_db(rows, tmp)
+        os.replace(tmp, db_path)
         print(f"Xong: {len(rows)} scene có thoại -> {db_path}")
         return
 
     if not args.out_root:
         ap.error("cần một trong: --from-s3 | --payload+--transcripts | --out-root")
     db_path = args.db or os.path.join(args.out_root, DB_FILENAME)
-    if os.path.exists(db_path):
-        os.remove(db_path)
     _build_from_ingest_outputs(args.out_root, db_path)
 
 

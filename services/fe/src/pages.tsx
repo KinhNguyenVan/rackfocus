@@ -137,11 +137,17 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
 
   // As-you-type transcript suggest: debounce 200ms + AbortController để mỗi keystroke huỷ
   // request cũ (không đua nhau trả về lệch thứ tự). Chỉ chạy ở KIS mode + query >= 2 ký tự.
+  //
+  // `cancelled` bọc CẢ `.finally`, không chỉ `.catch`: request bị abort vẫn chạy `.finally`,
+  // và lúc đó effect mới đã bật loading cho query mới -> `setSuggestLoading(false)` của
+  // request CŨ tắt loading của request MỚI. Dropdown khi đó có `items` rỗng + không loading
+  // = hiện "Không có transcript khớp" trong ~200ms mỗi lần gõ, dù chưa hỏi xong server.
   useEffect(() => {
     if (!transcriptMode || searchMode !== "kis") {
       setSuggests([]);
       setSuggestError(null);
       setSuggestOpen(false);
+      setSuggestLoading(false);
       return;
     }
     const q = query.trim();
@@ -149,25 +155,32 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
       setSuggests([]);
       setSuggestError(null);
       setSuggestOpen(false);
+      setSuggestLoading(false);
       return;
     }
     setSuggestOpen(true);
     setSuggestLoading(true);
+    let cancelled = false;
     const ctrl = new AbortController();
     const timer = setTimeout(() => {
       transcriptSuggest(q, 10, ctrl.signal)
         .then((res) => {
+          if (cancelled) return;
           setSuggests(res.items);
           setSuggestError(null);
         })
         .catch((err: unknown) => {
+          if (cancelled) return;
           if (err instanceof DOMException && err.name === "AbortError") return;
           setSuggests([]);
           setSuggestError(err instanceof Error ? err.message : "Lỗi transcript");
         })
-        .finally(() => setSuggestLoading(false));
+        .finally(() => {
+          if (!cancelled) setSuggestLoading(false);
+        });
     }, 200);
     return () => {
+      cancelled = true;
       clearTimeout(timer);
       ctrl.abort();
     };

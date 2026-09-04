@@ -31,8 +31,9 @@ async def lifespan(app: FastAPI):
         log.warning("chưa nạp được tag vocab lúc khởi động (%s) — sẽ thử lại khi có "
                     "request. Core có thể đang tải snapshot.", type(ex).__name__)
 
-    # Transcript keyword index (tuỳ chọn): rỗng = tắt; lỗi mở file KHÔNG chặn khởi động,
-    # endpoint /api/transcript/suggest sẽ trả 503 cho tới khi cấu hình đúng.
+    # Transcript keyword index (tuỳ chọn): rỗng = tắt. Lỗi mở file / index RỖNG (build dở
+    # dang) KHÔNG chặn khởi động — search vector không phụ thuộc nó — nhưng
+    # /api/transcript/suggest sẽ trả 503 và /readyz báo `transcript_index: failed`.
     if st.transcript_db_path:
         try:
             transcript.load(st.transcript_db_path)

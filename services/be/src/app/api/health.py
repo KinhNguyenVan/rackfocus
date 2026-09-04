@@ -19,6 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Response
 
 from ..clients import searchcore
+from ..services import transcript
 
 router = APIRouter()
 
@@ -30,10 +31,16 @@ async def healthz() -> dict:
 
 @router.get("/readyz")
 async def readyz() -> dict:
+    # transcript_index nằm NGOÀI `ready`: đây là tính năng cộng thêm, opt-in — index chưa
+    # nạp thì search vector vẫn chạy đủ, nên không được kéo cả BE thành not-ready. Nhưng
+    # phải THẤY được: "disabled" (không cấu hình, cố ý) và "failed" (cấu hình rồi mà mở
+    # lỗi) cùng làm /api/transcript/suggest trả 503, mà chỉ một trong hai là sự cố. Cùng
+    # lý lẽ với `stub_mode` bên dưới.
+    tx = transcript.status()
     try:
         h = await searchcore.health(timeout=2.0)
     except Exception as ex:  # noqa: BLE001
-        return {"ready": False, "reason": f"{type(ex).__name__}: {ex}"}
+        return {"ready": False, "reason": f"{type(ex).__name__}: {ex}", "transcript_index": tx}
     return {
         "ready": h.ready,
         "snapshot_ver": h.snapshot_ver,
@@ -42,6 +49,7 @@ async def readyz() -> dict:
         "stub_mode": h.stub_mode,
         # stub_mode=True nghĩa là core trả kết quả giả — phải thấy được từ ngoài,
         # không thì rất dễ tưởng hệ thống đang chạy thật.
+        "transcript_index": tx,
     }
 
 
