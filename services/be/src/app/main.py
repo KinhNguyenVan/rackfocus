@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from .api.router import api_router, root_router
 from .clients import searchcore
 from .config import get_settings
-from .services import tagvocab
+from .services import tagvocab, transcript
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -30,6 +30,18 @@ async def lifespan(app: FastAPI):
     except Exception as ex:  # noqa: BLE001
         log.warning("chưa nạp được tag vocab lúc khởi động (%s) — sẽ thử lại khi có "
                     "request. Core có thể đang tải snapshot.", type(ex).__name__)
+
+    # Transcript keyword index (tuỳ chọn): rỗng = tắt. Lỗi mở file / index RỖNG (build dở
+    # dang) KHÔNG chặn khởi động — search vector không phụ thuộc nó — nhưng
+    # /api/transcript/suggest sẽ trả 503 và /readyz báo `transcript_index: failed`.
+    if st.transcript_db_path:
+        try:
+            transcript.load(st.transcript_db_path)
+        except Exception as ex:  # noqa: BLE001
+            log.warning("không mở được transcript index (%s: %s) — /api/transcript/suggest "
+                        "sẽ trả 503.", type(ex).__name__, ex)
+    else:
+        log.info("transcript_db_path rỗng — bỏ qua transcript keyword search.")
 
     yield
     await searchcore.close()

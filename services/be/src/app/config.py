@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     diversity_min_time_gap_sec: float = 0.0
     diversity_dedup_threshold: float = 0.0
 
+    # ── Transcript keyword search (artifact phụ ship kèm snapshot) ────
+    # Đường dẫn tới transcript.sqlite (FTS5) dựng ở ingest/build_transcript_index.py.
+    # Rỗng = tính năng tắt: /api/transcript/suggest trả 503, phần còn lại chạy như cũ.
+    transcript_db_path: str = ""
+    transcript_suggest_limit: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:

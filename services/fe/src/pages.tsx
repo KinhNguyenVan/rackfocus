@@ -1,9 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { neighbors as fetchNeighbors } from "./api/client";
-import type { NeighborFrame, SearchHit, TemporalChain } from "./api/types";
+import { neighbors as fetchNeighbors, transcriptSuggest } from "./api/client";
+import type { NeighborFrame, SearchHit, TemporalChain, TranscriptSuggestItem } from "./api/types";
 import { VideoPlayer } from "./components/VideoPlayer";
+import { TranscriptSuggest } from "./components/TranscriptSuggest";
 import { useSearch } from "./hooks/useSearch";
 import { useTemporalSearch } from "./hooks/useTemporalSearch";
 import { TemporalQueryBuilder } from "./components/TemporalQueryBuilder";
@@ -115,6 +116,13 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
   const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [neighborsError, setNeighborsError] = useState<string | null>(null);
   const [playback, setPlayback] = useState<Result | null>(null);
+  // Transcript keyword search (KIS mode): bật = gõ tới đâu gợi ý scene có lời thoại khớp.
+  // Độc lập với vector search — chỉ mở scene clip qua VideoPlayer, không đụng kết quả search.
+  const [transcriptMode, setTranscriptMode] = useState(false);
+  const [suggests, setSuggests] = useState<TranscriptSuggestItem[]>([]);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     x: number;
@@ -126,6 +134,80 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
     y: 0,
     target: null,
   });
+
+  // As-you-type transcript suggest: debounce 200ms + AbortController để mỗi keystroke huỷ
+  // request cũ (không đua nhau trả về lệch thứ tự). Chỉ chạy ở KIS mode + query >= 2 ký tự.
+  //
+  // `cancelled` bọc CẢ `.finally`, không chỉ `.catch`: request bị abort vẫn chạy `.finally`,
+  // và lúc đó effect mới đã bật loading cho query mới -> `setSuggestLoading(false)` của
+  // request CŨ tắt loading của request MỚI. Dropdown khi đó có `items` rỗng + không loading
+  // = hiện "Không có transcript khớp" trong ~200ms mỗi lần gõ, dù chưa hỏi xong server.
+  useEffect(() => {
+    if (!transcriptMode || searchMode !== "kis") {
+      setSuggests([]);
+      setSuggestError(null);
+      setSuggestOpen(false);
+      setSuggestLoading(false);
+      return;
+    }
+    const q = query.trim();
+    if (q.length < 2) {
+      setSuggests([]);
+      setSuggestError(null);
+      setSuggestOpen(false);
+      setSuggestLoading(false);
+      return;
+    }
+    setSuggestOpen(true);
+    setSuggestLoading(true);
+    let cancelled = false;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      transcriptSuggest(q, 10, ctrl.signal)
+        .then((res) => {
+          if (cancelled) return;
+          setSuggests(res.items);
+          setSuggestError(null);
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setSuggests([]);
+          setSuggestError(err instanceof Error ? err.message : "Lỗi transcript");
+        })
+        .finally(() => {
+          if (!cancelled) setSuggestLoading(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [query, transcriptMode, searchMode]);
+
+  // Chọn 1 gợi ý -> dựng Result tối thiểu và mở VideoPlayer ngay đầu scene (seekSeconds=0
+  // vì keyframe_time = start_sec). Không đi qua search vector nên các field xếp hạng để 0.
+  const pickTranscript = (item: TranscriptSuggestItem) => {
+    setPlayback({
+      point_id: 0,
+      row: 0,
+      score: 0,
+      rank: 0,
+      video_name: item.video_name,
+      frame: 0,
+      keyframe_time: item.start_sec,
+      start_sec: item.start_sec,
+      end_sec: item.end_sec,
+      keyframe_url: item.keyframe_url,
+      clip_url: item.clip_url,
+      scene_idx: item.scene_idx,
+      has_speech: true,
+      url: item.keyframe_url,
+      video: item.video_name,
+    });
+    setSuggestOpen(false);
+  };
 
   const loadFrames = (
     video: string,
@@ -619,31 +701,45 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                           onEvent2Change={setEvent2}
                         />
                       ) : (
-                        <div className="input-group mb-3">
-                          <input
-                            type="text"
-                            className="form-control"
-                            placeholder="Search by text..."
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                          />
-                          <input
-                            type="text"
-                            className="form-control"
-                            placeholder="Enter flag..."
-                            value={flag}
-                            onChange={(e) => setFlag(e.target.value)}
-                          />
-                          <select
-                            className="form-select"
-                            style={{ maxWidth: "120px" }}
-                            value={service}
-                            onChange={(e) => setService(e.target.value)}
-                          >
-                            <option value="image">Image</option>
-                            <option value="caption">Caption</option>
-                            <option value="ocr">OCR</option>
-                          </select>
+                        <div className="position-relative mb-3">
+                          <div className="input-group">
+                            <input
+                              type="text"
+                              className="form-control"
+                              placeholder={
+                                transcriptMode
+                                  ? "Tìm theo lời thoại..."
+                                  : "Search by text..."
+                              }
+                              value={query}
+                              onChange={(e) => setQuery(e.target.value)}
+                            />
+                            <input
+                              type="text"
+                              className="form-control"
+                              placeholder="Enter flag..."
+                              value={flag}
+                              onChange={(e) => setFlag(e.target.value)}
+                            />
+                            <select
+                              className="form-select"
+                              style={{ maxWidth: "120px" }}
+                              value={service}
+                              onChange={(e) => setService(e.target.value)}
+                            >
+                              <option value="image">Image</option>
+                              <option value="caption">Caption</option>
+                              <option value="ocr">OCR</option>
+                            </select>
+                          </div>
+                          {transcriptMode && suggestOpen && (
+                            <TranscriptSuggest
+                              items={suggests}
+                              loading={suggestLoading}
+                              error={suggestError}
+                              onPick={pickTranscript}
+                            />
+                          )}
                         </div>
                       )}
                       <div className="d-flex align-items-center gap-2 mt-2">
@@ -663,6 +759,24 @@ export function SearchPage({ goSubmission }: { goSubmission: () => void }) {
                         >
                           Clear
                         </button>
+                        {searchMode === "kis" && (
+                          <div className="form-check form-switch ms-auto mb-0">
+                            <input
+                              className="form-check-input"
+                              type="checkbox"
+                              role="switch"
+                              id="transcriptModeSwitch"
+                              checked={transcriptMode}
+                              onChange={(e) => setTranscriptMode(e.target.checked)}
+                            />
+                            <label
+                              className="form-check-label small"
+                              htmlFor="transcriptModeSwitch"
+                            >
+                              Tìm transcript
+                            </label>
+                          </div>
+                        )}
                       </div>
                     </form>
                     {searchMode === "temporal" && (

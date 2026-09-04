@@ -1,4 +1,4 @@
-import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalPrepareResponse, TemporalSearchRequest, TemporalSearchResponse } from "./types";
+import type { NeighborsResponse, SearchRequest, SearchResponse, TemporalPrepareResponse, TemporalSearchRequest, TemporalSearchResponse, TranscriptSuggestResponse } from "./types";
 import { mockNeighbors, mockSearch, mockTemporalSearch } from "./mock";
 
 // Mock là OPT-IN: phải khai `VITE_USE_MOCK=true` mới bật.
@@ -99,4 +99,22 @@ export async function prepareTemporal(
 	}
 
 	return response.json() as Promise<TemporalPrepareResponse>;
+}
+
+// GET /api/transcript/suggest — gợi ý scene theo keyword trong lời thoại (as-you-type).
+// Không có mock: khi BE chưa cấu hình transcript_db_path sẽ trả 503, caller hiện lỗi nhẹ.
+export async function transcriptSuggest(
+	query: string,
+	limit = 10,
+	signal?: AbortSignal,
+): Promise<TranscriptSuggestResponse> {
+	const params = new URLSearchParams({ q: query, limit: String(limit) });
+	const response = await fetch(`/api/transcript/suggest?${params}`, { signal });
+
+	if (!response.ok) {
+		const detail = await response.text();
+		throw new Error(detail || `Transcript suggest failed (${response.status})`);
+	}
+
+	return response.json() as Promise<TranscriptSuggestResponse>;
 }
